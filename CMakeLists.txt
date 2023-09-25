@@ -10,6 +10,7 @@ project(pico-rainviewer)
 pico_sdk_init()
 
 add_subdirectory(lib/pico-web-client)
+target_compile_definitions(pico_web_client PRIVATE "LOG_LEVEL=LOG_LEVEL_INFO")
 
 add_executable(pico_rainviewer
     src/main.cpp
@@ -26,7 +27,7 @@ target_link_libraries(pico_rainviewer PRIVATE
     hardware_rtc
 )
 target_compile_options(pico_rainviewer PRIVATE "-Wno-psabi")
-target_compile_definitions(pico_rainviewer PRIVATE "WIFI_SSID=\"$ENV{WIFI_SSID}\"" "WIFI_PASSWORD=\"$ENV{WIFI_PASSWORD}\"")
+target_compile_definitions(pico_rainviewer PRIVATE "WIFI_SSID=\"$ENV{WIFI_SSID}\"" "WIFI_PASSWORD=\"$ENV{WIFI_PASSWORD}\"" "LOG_LEVEL=LOG_LEVEL_INFO")
 target_link_options(pico_rainviewer PRIVATE "-Wl,--print-memory-usage")
 
 pico_enable_stdio_usb(pico_rainviewer 1)
