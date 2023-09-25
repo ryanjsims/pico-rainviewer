@@ -107,6 +107,7 @@ void parse_weather_maps(json& array, uint64_t* generated) {
         responded = true;
     });
 
+    client.header("Connection", "close");
     client.get("/public/weather-maps.json");
     uint32_t i = 50;
     while(i > 0 && !responded) {
