@@ -1,8 +1,14 @@
+#define LOG_LEVEL LOG_LEVEL_DEBUG
+
 #include <stdio.h>
 #include <pico/cyw43_arch.h>
 #include <pico/multicore.h>
 #include <pico/stdlib.h>
+#include <pico/util/datetime.h>
+#include <hardware/rtc.h>
 #include <http_client.h>
+#include <ntp_client.h>
+#include <nlohmann/json.hpp>
 #include "logger.h"
 
 #define ISRG_ROOT_X1_CERT "-----BEGIN CERTIFICATE-----\n\
@@ -36,6 +42,9 @@ WCLKTVXkcGdtwlfFRjlBz4pYg1htmf5X6DYO8A4jqv2Il9DjXA6USbW1FzXSLr9O\n\
 he8Y4IWS6wY7bCkjCWDcRQJMEhg76fsO3txE+FiYruq9RUWhiF1myv4Q6W+CyBFC\n\
 Dfvp7OOGAN6dEOM4+qR9sdjoSYKEBpsr6GtPAQw4dy753ec5\n\
 -----END CERTIFICATE-----\n"
+
+using namespace nlohmann;
+using namespace nlohmann::detail;
 
 void dump_bytes(const uint8_t *bptr, uint32_t len) {
     unsigned int i = 0;
@@ -76,18 +85,49 @@ void netif_status_callback(netif* netif) {
     }
 }
 
+void parse_weather_maps(json& array, uint64_t* generated) {
+    assert(array.type() == value_t::array);
+    assert(generated != nullptr);
+    http_client client("https://api.rainviewer.com", {(uint8_t*)ISRG_ROOT_X1_CERT, sizeof(ISRG_ROOT_X1_CERT)});
+    bool responded = false;
+
+    client.on_response([&client, &array, &responded, generated]() {
+        const http_response& response = client.response();
+        info("Got response: %d %s\n", response.status(), response.get_status_text().c_str());
+        if(response.status() == 200) {
+            json data = json::parse(response.get_body());
+            *generated = data["generated"];
+            for(auto it = data["radar"]["past"].begin(); it != data["radar"]["past"].end(); it++) {
+                array.push_back(*it);
+            }
+            for(auto it = data["radar"]["nowcast"].begin(); it != data["radar"]["nowcast"].end(); it++) {
+                array.push_back(*it);
+            }
+        }
+        responded = true;
+    });
+
+    client.get("/public/weather-maps.json");
+    uint32_t i = 50;
+    while(i > 0 && !responded) {
+        sleep_ms(100);
+        i--;
+    }
+}
+
 int main() {
     stdio_init_all();
+    rtc_init();
     if(cyw43_arch_init_with_country(CYW43_COUNTRY_USA)) {
         printf("Wi-Fi init failed");
         return -1;
     }
     cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, 1);
-    sleep_ms(5000);
+    sleep_ms(2000);
     cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, 0);
 
     cyw43_arch_enable_sta_mode();
-    info1("Connecting to WiFi...\n");
+    info("Connecting to WiFi SSID %s...\n", WIFI_SSID);
 
     netif_set_status_callback(netif_default, netif_status_callback);
 
@@ -113,17 +153,30 @@ int main() {
         }
     }
 
-    http_client client("https://api.rainviewer.com", {(uint8_t*)ISRG_ROOT_X1_CERT, sizeof(ISRG_ROOT_X1_CERT)});
+    char buf[256];
+    datetime_t datetime;
+    rtc_get_datetime(&datetime);
+    datetime_to_str(buf, sizeof(buf), &datetime);
+    info("Got rtc time:\n%s\n", buf);
 
-    client.on_response([&client]() {
-        const http_response& response = client.response();
-        info("Got response:\n%d %s\n%s\n", response.status(), response.get_status_text().c_str(), response.get_body().c_str());
-    });
+    ntp_client ntp("pool.ntp.org");
+    ntp.sync_time();
 
-    client.get("/public/weather-maps.json");
-    while(true) {
-        sleep_ms(100);
+    json rain_maps = json::array();
+    uint64_t generated_timestamp = 0;
+    parse_weather_maps(rain_maps, &generated_timestamp);
+
+    while(1) {
+        datetime_t datetime;
+        rtc_get_datetime(&datetime);
+        datetime_to_str(buf, sizeof(buf), &datetime);
+        printf("%s\r", buf);
+        cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, 0);
+        sleep_ms(500);
+        cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, 1);
+        sleep_ms(500);
     }
+    printf("\nLeft the while loop???\n");
 
     return 0;
 }
