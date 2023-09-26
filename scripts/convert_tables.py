@@ -58,7 +58,12 @@ with open("../include/color_tables.h", "w") as out:
             if j % 4 == 0:
                 newline = "\n"
                 out.write(f"{newline if j != 0 else ''}    ")
-            out.write(f"0x{line[i+1].strip('#')}, ")
+            value = int(line[i+1].strip('#'), 16)
+            alpha = value & 0x000000FF
+            red = (value & 0xFF000000) >> 24
+            green = (value & 0x00FF0000) >> 16
+            blue = (value & 0x0000FF00) >> 8
+            out.write(f"0x{red | green << 8 | blue << 16 | alpha << 24:08x}, ")
         f.seek(0)
         next(reader)
     out.write("\n};\n\n")
