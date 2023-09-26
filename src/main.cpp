@@ -1,5 +1,3 @@
-#define LOG_LEVEL LOG_LEVEL_DEBUG
-
 #include <stdio.h>
 #include <pico/cyw43_arch.h>
 #include <pico/multicore.h>
@@ -10,6 +8,8 @@
 #include <ntp_client.h>
 #include <nlohmann/json.hpp>
 #include "logger.h"
+
+#include "color_tables.h"
 
 #define ISRG_ROOT_X1_CERT "-----BEGIN CERTIFICATE-----\n\
 MIIFYDCCBEigAwIBAgIQQAF3ITfU6UK47naqPGQKtzANBgkqhkiG9w0BAQsFADA/\n\
@@ -154,30 +154,18 @@ int main() {
         }
     }
 
-    char buf[256];
-    datetime_t datetime;
-    rtc_get_datetime(&datetime);
-    datetime_to_str(buf, sizeof(buf), &datetime);
-    info("Got rtc time:\n%s\n", buf);
-
     ntp_client ntp("pool.ntp.org");
-    ntp.sync_time();
+    // Repeat sync once per day at 10am UTC (3am AZ)
+    datetime_t repeat = {.year = -1, .month = -1, .day = -1, .dotw = -1, .hour = 10, .min = 0, .sec = 0};
+    ntp.sync_time(&repeat);
 
     json rain_maps = json::array();
     uint64_t generated_timestamp = 0;
     parse_weather_maps(rain_maps, &generated_timestamp);
 
     while(1) {
-        datetime_t datetime;
-        rtc_get_datetime(&datetime);
-        datetime_to_str(buf, sizeof(buf), &datetime);
-        printf("%s\r", buf);
-        cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, 0);
-        sleep_ms(500);
-        cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, 1);
-        sleep_ms(500);
+        sleep_ms(1000);
     }
-    printf("\nLeft the while loop???\n");
 
     return 0;
 }
