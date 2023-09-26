@@ -12,9 +12,24 @@ pico_sdk_init()
 add_subdirectory(lib/pico-web-client)
 target_compile_definitions(pico_web_client PRIVATE "LOG_LEVEL=LOG_LEVEL_INFO")
 
+add_library(PNGdec
+    lib/PNGdec/src/adler32.c
+    lib/PNGdec/src/crc32.c
+    lib/PNGdec/src/infback.c
+    lib/PNGdec/src/inffast.c
+    lib/PNGdec/src/inflate.c
+    lib/PNGdec/src/inftrees.c
+    lib/PNGdec/src/PNGdec.cpp
+    lib/PNGdec/src/zutil.c
+)
+target_include_directories(PNGdec PRIVATE lib/PNGdec/src)
+target_compile_definitions(PNGdec PRIVATE "__MACH__=\"pico_w\"")
+
+
 add_executable(pico_rainviewer
     src/main.cpp
     src/rgb_matrix.cpp
+    src/weather_map.cpp
 )
 
 pico_generate_pio_header(pico_rainviewer ${CMAKE_CURRENT_LIST_DIR}/src/pio/hub75e.pio)
@@ -29,6 +44,7 @@ target_link_libraries(pico_rainviewer PRIVATE
     hardware_rtc
     hardware_dma
     hardware_pio
+    PNGdec
 )
 target_compile_options(pico_rainviewer PRIVATE "-Wno-psabi")
 target_compile_definitions(pico_rainviewer PRIVATE "WIFI_SSID=\"$ENV{WIFI_SSID}\"" "WIFI_PASSWORD=\"$ENV{WIFI_PASSWORD}\"" "LOG_LEVEL=LOG_LEVEL_INFO")
