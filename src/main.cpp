@@ -10,8 +10,10 @@
 #include "logger.h"
 
 #include "color_tables.h"
+#include "weather_map.h"
+#include "rgb_matrix.h"
 
-#define ISRG_ROOT_X1_CERT "-----BEGIN CERTIFICATE-----\n\
+const char ISRG_ROOT_X1_CERT[] = "-----BEGIN CERTIFICATE-----\n\
 MIIFYDCCBEigAwIBAgIQQAF3ITfU6UK47naqPGQKtzANBgkqhkiG9w0BAQsFADA/\n\
 MSQwIgYDVQQKExtEaWdpdGFsIFNpZ25hdHVyZSBUcnVzdCBDby4xFzAVBgNVBAMT\n\
 DkRTVCBSb290IENBIFgzMB4XDTIxMDEyMDE5MTQwM1oXDTI0MDkzMDE4MTQwM1ow\n\
@@ -41,10 +43,13 @@ MA0GCSqGSIb3DQEBCwUAA4IBAQAKcwBslm7/DlLQrt2M51oGrS+o44+/yQoDFVDC\n\
 WCLKTVXkcGdtwlfFRjlBz4pYg1htmf5X6DYO8A4jqv2Il9DjXA6USbW1FzXSLr9O\n\
 he8Y4IWS6wY7bCkjCWDcRQJMEhg76fsO3txE+FiYruq9RUWhiF1myv4Q6W+CyBFC\n\
 Dfvp7OOGAN6dEOM4+qR9sdjoSYKEBpsr6GtPAQw4dy753ec5\n\
------END CERTIFICATE-----\n"
+-----END CERTIFICATE-----\n";
 
 using namespace nlohmann;
 using namespace nlohmann::detail;
+
+weather_map maps[16];
+rgb_matrix<64, 64> matrix;
 
 void dump_bytes(const uint8_t *bptr, uint32_t len) {
     unsigned int i = 0;
@@ -85,23 +90,24 @@ void netif_status_callback(netif* netif) {
     }
 }
 
-void parse_weather_maps(json& array, uint64_t* generated) {
-    assert(array.type() == value_t::array);
+void parse_weather_maps(json *array, uint64_t* generated) {
+    assert(array->type() == value_t::array);
     assert(generated != nullptr);
     http_client client("https://api.rainviewer.com", {(uint8_t*)ISRG_ROOT_X1_CERT, sizeof(ISRG_ROOT_X1_CERT)});
     bool responded = false;
 
-    client.on_response([&client, &array, &responded, generated]() {
+    client.on_response([&client, array, &responded, generated]() {
         const http_response& response = client.response();
         info("Got response: %d %s\n", response.status(), response.get_status_text().c_str());
         if(response.status() == 200) {
             json data = json::parse(response.get_body());
             *generated = data["generated"];
             for(auto it = data["radar"]["past"].begin(); it != data["radar"]["past"].end(); it++) {
-                array.push_back(*it);
+                info("data[\"radar\"][\"past\"] = %s\n", it->dump(4).c_str());
+                array->push_back(*it);
             }
             for(auto it = data["radar"]["nowcast"].begin(); it != data["radar"]["nowcast"].end(); it++) {
-                array.push_back(*it);
+                array->push_back(*it);
             }
         }
         responded = true;
@@ -109,16 +115,58 @@ void parse_weather_maps(json& array, uint64_t* generated) {
 
     client.header("Connection", "close");
     client.get("/public/weather-maps.json");
-    uint32_t i = 50;
+    uint32_t i = 3000;
     while(i > 0 && !responded) {
-        sleep_ms(100);
+        sleep_ms(10);
         i--;
     }
+}
+
+void load_weather_map(json& rain_map, double lat, double lon, uint8_t z, weather_map* map) {
+    http_client client("https://tilecache.rainviewer.com", {(uint8_t*)ISRG_ROOT_X1_CERT, sizeof(ISRG_ROOT_X1_CERT)});
+    bool responded = false;
+
+    client.on_response([&client, &responded]() {
+        const http_response& response = client.response();
+        info("Got response: %d %s\n", response.status(), response.get_status_text().c_str());
+        if(response.status() == 200) {
+            auto headers = response.get_headers();
+            info("Would receive %s of size %s\n", headers["Content-Type"].c_str(), headers["Content-Length"].c_str());
+        }
+        responded = true;
+    });
+
+    client.header("Connection", "close");
+    char buf[256];
+    sprintf(buf, "/256/%d/%.4lf/%.4lf/0/0_1.png", z, lat, lon);
+    info("Requesting %s\n", (rain_map["path"].get<std::string>() + buf).c_str());
+    client.head(rain_map["path"].get<std::string>() + buf);
+    uint32_t i = 3000;
+    while(i > 0 && !responded) {
+        sleep_ms(10);
+        i--;
+    }
+    if(i == 0) {
+        error1("Timed out!");
+    }
+    // Wait for the connection to close
+    while(client.connected()) {
+        sleep_ms(10);
+    }
+}
+
+int64_t update_maps_alarm(alarm_id_t alarm, void* user_data) {
+    bool* update_maps = (bool*)user_data;
+    *update_maps = true;
+    return 0;
 }
 
 int main() {
     stdio_init_all();
     rtc_init();
+    matrix.clear();
+    matrix.flip_buffer();
+    matrix.start();
     if(cyw43_arch_init_with_country(CYW43_COUNTRY_USA)) {
         printf("Wi-Fi init failed");
         return -1;
@@ -154,6 +202,8 @@ int main() {
         }
     }
 
+    bool update_maps = true;
+
     ntp_client ntp("pool.ntp.org");
     // Repeat sync once per day at 10am UTC (3am AZ)
     datetime_t repeat = {.year = -1, .month = -1, .day = -1, .dotw = -1, .hour = 10, .min = 0, .sec = 0};
@@ -161,10 +211,32 @@ int main() {
 
     json rain_maps = json::array();
     uint64_t generated_timestamp = 0;
-    parse_weather_maps(rain_maps, &generated_timestamp);
+    char buf[128];
 
     while(1) {
-        sleep_ms(1000);
+        if(update_maps) {
+            rain_maps = json::array();
+            parse_weather_maps(&rain_maps, &generated_timestamp);
+            info("Rain maps found as:\n%s\n", rain_maps.dump(4).c_str());
+
+            uint32_t delay_seconds = 610 - (generated_timestamp % 600);
+            datetime_t datetime;
+            rtc_get_datetime(&datetime);
+            struct tm time = ntp_client::tm_from_datetime(datetime);
+            time.tm_sec += delay_seconds;
+            add_alarm_in_ms(delay_seconds * 1000, update_maps_alarm, &update_maps, true);
+            info("Will alarm in %d seconds\n", delay_seconds);
+            for(uint32_t i = 0; i < rain_maps.size(); i++) {
+                load_weather_map(rain_maps[i], LAT, LNG, 8, &maps[i]);
+            }
+            update_maps = false;
+            
+            mktime(&time);
+            std::strftime(buf, 128, "%F %TZ", &time);
+
+            info("Updated maps, sleeping until %s\n", buf);
+        }
+        sleep_ms(10);
     }
 
     return 0;

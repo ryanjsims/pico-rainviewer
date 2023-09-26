@@ -47,7 +47,13 @@ target_link_libraries(pico_rainviewer PRIVATE
     PNGdec
 )
 target_compile_options(pico_rainviewer PRIVATE "-Wno-psabi")
-target_compile_definitions(pico_rainviewer PRIVATE "WIFI_SSID=\"$ENV{WIFI_SSID}\"" "WIFI_PASSWORD=\"$ENV{WIFI_PASSWORD}\"" "LOG_LEVEL=LOG_LEVEL_INFO")
+target_compile_definitions(pico_rainviewer PRIVATE 
+    "WIFI_SSID=\"$ENV{WIFI_SSID}\""
+    "WIFI_PASSWORD=\"$ENV{WIFI_PASSWORD}\""
+    "LOG_LEVEL=LOG_LEVEL_INFO"
+    "LAT=$ENV{LAT}"
+    "LNG=$ENV{LNG}"
+)
 target_link_options(pico_rainviewer PRIVATE "-Wl,--print-memory-usage")
 
 pico_enable_stdio_usb(pico_rainviewer 1)
