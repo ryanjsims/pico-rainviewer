@@ -14,8 +14,10 @@ target_compile_definitions(pico_web_client PRIVATE "LOG_LEVEL=LOG_LEVEL_INFO")
 
 add_executable(pico_rainviewer
     src/main.cpp
+    src/rgb_matrix.cpp
 )
 
+pico_generate_pio_header(pico_rainviewer ${CMAKE_CURRENT_LIST_DIR}/src/pio/hub75e.pio)
 target_include_directories(pico_rainviewer PUBLIC include)
 target_link_libraries(pico_rainviewer PRIVATE
     pico_stdlib
@@ -25,6 +27,8 @@ target_link_libraries(pico_rainviewer PRIVATE
     pico_multicore
     pico_web_client
     hardware_rtc
+    hardware_dma
+    hardware_pio
 )
 target_compile_options(pico_rainviewer PRIVATE "-Wno-psabi")
 target_compile_definitions(pico_rainviewer PRIVATE "WIFI_SSID=\"$ENV{WIFI_SSID}\"" "WIFI_PASSWORD=\"$ENV{WIFI_PASSWORD}\"" "LOG_LEVEL=LOG_LEVEL_INFO")
