@@ -1,12 +1,40 @@
 #include "weather_map.h"
 
+#include <hardware/dma.h>
+#include <hardware/spi.h>
+
 weather_map::weather_map()
     : m_timestamp(0)
+    , m_nowcast(false)
     , m_data({0})
 {}
 
 time_t weather_map::timestamp() {
     return m_timestamp;
+}
+
+weather_map& weather_map::operator=(const weather_map_ext& other) {
+    m_timestamp = other.m_timestamp;
+    m_nowcast = other.m_nowcast;
+    // spi read 4096 bytes from other.m_address to m_data
+    return *this;
+}
+
+weather_map_ext weather_map::save(uint32_t address) {
+    weather_map_ext to_return;
+    to_return.m_timestamp = m_timestamp;
+    to_return.m_nowcast = m_nowcast;
+    to_return.m_address = address;
+    // spi write 4096 bytes from m_data to address
+    return to_return;
+}
+
+bool weather_map::nowcast() {
+    return m_nowcast;
+}
+
+void weather_map::set_nowcast(bool is_nowcast) {
+    m_nowcast = is_nowcast;
 }
 
 uint32_t weather_map::get_color(uint8_t row, uint8_t col, const uint32_t* palette) {
@@ -35,5 +63,27 @@ uint8_t *weather_map::data() {
 }
 
 void weather_map::set_timestamp(time_t new_timestamp) {
+    m_timestamp = new_timestamp;
+}
+
+weather_map_ext::weather_map_ext()
+    : m_timestamp(0)
+    , m_nowcast(false)
+    , m_address(0)
+{}
+
+time_t weather_map_ext::timestamp() {
+    return m_timestamp;
+}
+
+bool weather_map_ext::nowcast() {
+    return m_nowcast;
+}
+
+void weather_map_ext::set_nowcast(bool is_nowcast) {
+    m_nowcast = is_nowcast;
+}
+
+void weather_map_ext::set_timestamp(time_t new_timestamp) {
     m_timestamp = new_timestamp;
 }

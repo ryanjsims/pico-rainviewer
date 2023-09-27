@@ -43,6 +43,7 @@ target_link_libraries(pico_rainviewer PRIVATE
     pico_web_client
     hardware_rtc
     hardware_dma
+    hardware_spi
     hardware_pio
     PNGdec
 )
