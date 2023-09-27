@@ -48,12 +48,13 @@ Dfvp7OOGAN6dEOM4+qR9sdjoSYKEBpsr6GtPAQw4dy753ec5\n\
 using namespace nlohmann;
 using namespace nlohmann::detail;
 
-weather_map maps[16];
+weather_map_ext maps[16];
+weather_map scratch;
 rgb_matrix<64, 64> matrix;
 
 void dump_bytes(const uint8_t *bptr, uint32_t len) {
     unsigned int i = 0;
-
+    sizeof(weather_map) * 16;
     info("dump_bytes %d", len);
     for (i = 0; i < len;) {
         if ((i & 0x0f) == 0) {
@@ -121,37 +122,69 @@ void parse_weather_maps(json *array, uint64_t* generated) {
     }
 }
 
-void load_weather_map(json& rain_map, double lat, double lon, uint8_t z, weather_map* map) {
-    http_client client("https://tilecache.rainviewer.com", {(uint8_t*)ISRG_ROOT_X1_CERT, sizeof(ISRG_ROOT_X1_CERT)});
-    bool responded = false;
+uint8_t download_weather_maps(json& rain_maps, double lat, double lon, uint8_t z) {
+    uint8_t start = 0, count = rain_maps.size();
+    uint32_t first_timestamp = rain_maps[0]["time"];
+    for(uint8_t i = 0; i < count; i++) {
+        if((time_t)first_timestamp == maps[i].timestamp()) {
+            start = i;
+            break;
+        }
+    }
 
-    client.on_response([&client, &responded]() {
+    json to_download = json::array();
+
+    for(uint8_t i = 0; i < count; i++) {
+        uint8_t idx = (start + i) % 16;
+        bool nowcast = rain_maps[i]["path"].get<std::string>().find("nowcast") != std::string::npos;
+        if(maps[idx].nowcast() || maps[idx].timestamp() != rain_maps[i]["time"].get<time_t>()) {
+            maps[idx].set_nowcast(nowcast);
+            maps[idx].set_timestamp(rain_maps[i]["time"].get<time_t>());
+            rain_maps[i]["idx"] = idx;
+            to_download.push_back(rain_maps[i]);
+        }
+    }
+    info("Downloading %d maps...\n%s\n", to_download.size(), to_download.dump(4).c_str());
+    http_client client("https://tilecache.rainviewer.com", {(uint8_t*)ISRG_ROOT_X1_CERT, sizeof(ISRG_ROOT_X1_CERT)});
+
+    client.on_response([&client]() {
         const http_response& response = client.response();
         info("Got response: %d %s\n", response.status(), response.get_status_text().c_str());
         if(response.status() == 200) {
             auto headers = response.get_headers();
-            info("Would receive %s of size %s\n", headers["Content-Type"].c_str(), headers["Content-Length"].c_str());
+            info("Received %s of size %s\n", headers["Content-Type"].c_str(), headers["Content-Length"].c_str());
         }
-        responded = true;
     });
 
-    client.header("Connection", "close");
-    char buf[256];
-    sprintf(buf, "/256/%d/%.4lf/%.4lf/0/0_1.png", z, lat, lon);
-    info("Requesting %s\n", (rain_map["path"].get<std::string>() + buf).c_str());
-    client.head(rain_map["path"].get<std::string>() + buf);
-    uint32_t i = 3000;
-    while(i > 0 && !responded) {
-        sleep_ms(10);
-        i--;
-    }
-    if(i == 0) {
-        error1("Timed out!");
+    int8_t retry = -1;
+    for(uint8_t i = 0; i < to_download.size(); i++) {
+        if(retry != -1) {
+            i = retry;
+            retry = -1;
+        }
+        client.header("Connection", i == to_download.size() - 1 ? "close" : "keep-alive");
+        char buf[64];
+        sprintf(buf, "/256/%d/%.4lf/%.4lf/0/0_1.png", z, lat, lon);
+        info("Requesting %s\n", (to_download[i]["path"].get<std::string>() + buf).c_str());
+        client.head(to_download[i]["path"].get<std::string>() + buf);
+        uint32_t timeout = 3000;
+        while(timeout > 0 && !client.has_response()) {
+            sleep_ms(10);
+            timeout--;
+        }
+        if(timeout == 0) {
+            error1("Timed out!");
+            retry = i;
+            continue;
+        }
+        const http_response& response = client.response();
+        // Parse png, every 4 lines create one line of weather map
     }
     // Wait for the connection to close
     while(client.connected()) {
         sleep_ms(10);
     }
+    return start;
 }
 
 int64_t update_maps_alarm(alarm_id_t alarm, void* user_data) {
@@ -215,7 +248,7 @@ int main() {
     char buf[128];
 
     while(1) {
-        if(update_maps) {
+        if(update_maps && ntp.state() == ntp_state::SYNCED) {
             rain_maps.clear();
             parse_weather_maps(&rain_maps, &generated_timestamp);
             info("Rain maps found as:\n%s\n", rain_maps.dump(4).c_str());
@@ -227,9 +260,8 @@ int main() {
             time.tm_sec += delay_seconds;
             add_alarm_in_ms(delay_seconds * 1000, update_maps_alarm, &update_maps, true);
             info("Will alarm in %d seconds\n", delay_seconds);
-            for(uint32_t i = 0; i < rain_maps.size(); i++) {
-                load_weather_map(rain_maps[i], LAT, LNG, 8, &maps[i]);
-            }
+
+            download_weather_maps(rain_maps, LAT, LNG, 8);
             update_maps = false;
             time.tm_isdst = -1;
 
