@@ -22,8 +22,8 @@ add_library(PNGdec
     lib/PNGdec/src/PNGdec.cpp
     lib/PNGdec/src/zutil.c
 )
-target_include_directories(PNGdec PRIVATE lib/PNGdec/src)
-target_compile_definitions(PNGdec PRIVATE "__MACH__=\"pico_w\"")
+target_include_directories(PNGdec PUBLIC lib/PNGdec/src)
+target_compile_definitions(PNGdec PUBLIC "__MACH__=\"pico_w\"")
 
 
 add_executable(pico_rainviewer
