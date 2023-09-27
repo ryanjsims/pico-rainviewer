@@ -10,7 +10,7 @@ project(pico-rainviewer)
 pico_sdk_init()
 
 add_subdirectory(lib/pico-web-client)
-target_compile_definitions(pico_web_client PRIVATE "LOG_LEVEL=LOG_LEVEL_INFO")
+target_compile_definitions(pico_web_client PRIVATE "LOG_LEVEL=$ENV{LOG_LEVEL}")
 
 add_library(PNGdec
     lib/PNGdec/src/adler32.c
@@ -50,7 +50,7 @@ target_compile_options(pico_rainviewer PRIVATE "-Wno-psabi")
 target_compile_definitions(pico_rainviewer PRIVATE 
     "WIFI_SSID=\"$ENV{WIFI_SSID}\""
     "WIFI_PASSWORD=\"$ENV{WIFI_PASSWORD}\""
-    "LOG_LEVEL=LOG_LEVEL_INFO"
+    "LOG_LEVEL=$ENV{LOG_LEVEL}"
     "LAT=$ENV{LAT}"
     "LNG=$ENV{LNG}"
     "TIMEZONE=\"$ENV{TIMEZONE}\""
