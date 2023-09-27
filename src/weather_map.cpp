@@ -13,10 +13,12 @@ time_t weather_map::timestamp() const {
     return m_timestamp;
 }
 
-weather_map& weather_map::operator=(const weather_map_ext& other) {
+weather_map& weather_map::load(const weather_map_ext& other, bool load) {
     m_timestamp = other.m_timestamp;
     m_nowcast = other.m_nowcast;
-    // spi read 4096 bytes from other.m_address to m_data
+    if(load) {
+        // spi read 4096 bytes from other.m_address to m_data
+    }
     return *this;
 }
 

@@ -9,7 +9,7 @@ class weather_map {
 public:
     weather_map();
 
-    weather_map& operator=(const weather_map_ext& other);
+    weather_map& load(const weather_map_ext& other, bool load = true);
     weather_map_ext save(uint32_t address);
 
     time_t timestamp() const;
