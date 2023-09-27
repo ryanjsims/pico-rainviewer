@@ -103,7 +103,6 @@ void parse_weather_maps(json *array, uint64_t* generated) {
             json data = json::parse(response.get_body());
             *generated = data["generated"];
             for(auto it = data["radar"]["past"].begin(); it != data["radar"]["past"].end(); it++) {
-                info("data[\"radar\"][\"past\"] = %s\n", it->dump(4).c_str());
                 array->push_back(*it);
             }
             for(auto it = data["radar"]["nowcast"].begin(); it != data["radar"]["nowcast"].end(); it++) {
@@ -164,6 +163,8 @@ int64_t update_maps_alarm(alarm_id_t alarm, void* user_data) {
 int main() {
     stdio_init_all();
     rtc_init();
+    setenv("TZ", TIMEZONE, 1);
+    tzset();
     matrix.clear();
     matrix.flip_buffer();
     matrix.start();
@@ -215,14 +216,14 @@ int main() {
 
     while(1) {
         if(update_maps) {
-            rain_maps = json::array();
+            rain_maps.clear();
             parse_weather_maps(&rain_maps, &generated_timestamp);
             info("Rain maps found as:\n%s\n", rain_maps.dump(4).c_str());
 
-            uint32_t delay_seconds = 610 - (generated_timestamp % 600);
             datetime_t datetime;
             rtc_get_datetime(&datetime);
-            struct tm time = ntp_client::tm_from_datetime(datetime);
+            struct tm time = ntp_client::localtime(datetime);
+            uint32_t delay_seconds = 610 - (mktime(&time) % 600);
             time.tm_sec += delay_seconds;
             add_alarm_in_ms(delay_seconds * 1000, update_maps_alarm, &update_maps, true);
             info("Will alarm in %d seconds\n", delay_seconds);
@@ -230,9 +231,10 @@ int main() {
                 load_weather_map(rain_maps[i], LAT, LNG, 8, &maps[i]);
             }
             update_maps = false;
-            
-            mktime(&time);
-            std::strftime(buf, 128, "%F %TZ", &time);
+            time.tm_isdst = -1;
+
+            time_t converted = mktime(&time);
+            std::strftime(buf, 128, "%F %T UTC%z", localtime_r(&converted, &time));
 
             info("Updated maps, sleeping until %s\n", buf);
         }

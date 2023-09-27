@@ -13,18 +13,21 @@ git clone https://github.com/ryanjsims/pico-rainviewer
 # Don't recurse submodules cause there are a _lot_ of submodules in the pico-sdk's dependencies
 cd pico-rainviewer && git submodule update --init && cd lib/pico-sdk && git submodule update --init && cd ../pico-web-client && git submodule update --init lib/json && cd ../..
 mkdir build && cd build
-BOARD=pico_w WIFI_SSID=<your-ssid> WIFI_PASSWORD=<your-password> cmake ..
+BOARD=pico_w WIFI_SSID=<your-ssid> WIFI_PASSWORD=<your-password> LAT=38.8951 LNG=-77.0364 cmake ..
 make
 ```
 
-Alternatively you can build with VSCode using the CMake Tools extension. You still need to init the correct submodules as above, but instead of setting the `WIFI_SSID` and `WIFI_PASSWORD` environment variables on the command line, you can add them to the `.vscode/settings.json` file as such:
+Alternatively you can build with VSCode using the CMake Tools extension. You still need to init the correct submodules as above, but instead of setting the `WIFI_SSID` and `WIFI_PASSWORD` environment variables on the command line, you can add them to the `.vscode/settings.json` file as such (sans comments):
 ```jsonc
 // .vscode/settings.json
 {
     "cmake.environment": {
         "BOARD": "pico_w",
         "WIFI_SSID": "<your ssid>",
-        "WIFI_PASSWORD": "<your password>"
+        "WIFI_PASSWORD": "<your password>",
+        "LAT": 38.8951, // Washington DC, set to your desired display location
+        "LNG": -77.0364,
+        "TIMEZONE": "EST+5EST,M3.2.0/2,M11.1.0/2" // see https://www.gnu.org/software/libc/manual/html_node/TZ-Variable.html
     }
 }
 ```
