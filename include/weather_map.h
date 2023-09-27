@@ -12,15 +12,15 @@ public:
     weather_map& operator=(const weather_map_ext& other);
     weather_map_ext save(uint32_t address);
 
-    time_t timestamp();
+    time_t timestamp() const;
     void set_timestamp(time_t new_timestamp);
 
-    bool nowcast();
+    bool nowcast() const;
     void set_nowcast(bool is_nowcast);
 
-    uint32_t get_color(uint8_t row, uint8_t col, const uint32_t* palette);
-    uint8_t get_grayscale(uint8_t row, uint8_t col);
-    int8_t get_dbz(uint8_t row, uint8_t col);
+    uint32_t get_color(uint8_t row, uint8_t col, const uint32_t* palette) const;
+    uint8_t get_grayscale(uint8_t row, uint8_t col) const;
+    int8_t get_dbz(uint8_t row, uint8_t col) const;
 
     uint8_t *data();
 private:
@@ -34,13 +34,16 @@ class weather_map_ext {
 public:
     weather_map_ext();
 
-    time_t timestamp();
+    time_t timestamp() const;
     void set_timestamp(time_t new_timestamp);
 
-    bool nowcast();
+    bool nowcast() const;
     void set_nowcast(bool is_nowcast);
+
+    uint32_t address() const;
+    bool initialized() const;
 private:
     time_t m_timestamp;
-    bool m_nowcast;
+    bool m_nowcast, m_init;
     uint32_t m_address;
 };
