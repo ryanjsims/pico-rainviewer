@@ -8,6 +8,7 @@
 #include <ntp_client.h>
 #include <nlohmann/json.hpp>
 #include "logger.h"
+#include <PNGdec.h>
 
 #include "color_tables.h"
 #include "weather_map.h"
@@ -51,6 +52,7 @@ using namespace nlohmann::detail;
 weather_map_ext maps[16];
 weather_map scratch;
 rgb_matrix<64, 64> matrix;
+PNG png_decoder;
 
 void dump_bytes(const uint8_t *bptr, uint32_t len) {
     unsigned int i = 0;
@@ -122,6 +124,31 @@ void parse_weather_maps(json *array, uint64_t* generated) {
     }
 }
 
+uint8_t lines[4][256];
+void write_line(int row) {
+    debug("Writing line %d to scratch weather map\n", row);
+    for(int col = 0; col < 64; col++) {
+        uint16_t sum;
+        for(int i = 0; i < 4; i++) {
+            for(int j = 0; j < 4; j++) {
+                sum += lines[i][col * 4 + j];
+            }
+        }
+        scratch.set_pixel(row, col, sum / 16);
+    }
+}
+
+void png_draw_callback(PNGDRAW *draw) {
+    if(draw->y % 4 == 0 && draw->y != 0) {
+        int row = (draw->y / 4) - 1;
+        write_line(row);
+    }
+    int stride = draw->iPitch / draw->iWidth;
+    for(int i = 0; i < draw->iWidth; i++) {
+        lines[draw->y % 4][i] = draw->pPixels[stride * i];
+    }
+}
+
 uint8_t download_weather_maps(json& rain_maps, double lat, double lon, uint8_t z) {
     uint8_t start = 0, count = rain_maps.size();
     uint32_t first_timestamp = rain_maps[0]["time"];
@@ -166,7 +193,7 @@ uint8_t download_weather_maps(json& rain_maps, double lat, double lon, uint8_t z
         char buf[64];
         sprintf(buf, "/256/%d/%.4lf/%.4lf/0/0_1.png", z, lat, lon);
         info("Requesting %s\n", (to_download[i]["path"].get<std::string>() + buf).c_str());
-        client.head(to_download[i]["path"].get<std::string>() + buf);
+        client.get(to_download[i]["path"].get<std::string>() + buf);
         uint32_t timeout = 3000;
         while(timeout > 0 && !client.has_response()) {
             sleep_ms(10);
@@ -177,8 +204,24 @@ uint8_t download_weather_maps(json& rain_maps, double lat, double lon, uint8_t z
             retry = i;
             continue;
         }
+        scratch.load(maps[to_download[i]["idx"].get<uint32_t>()], false);
         const http_response& response = client.response();
-        // Parse png, every 4 lines create one line of weather map
+        int rc = png_decoder.openRAM((uint8_t*)response.get_body().data(), response.get_body().size(), png_draw_callback);
+        if(rc != PNG_SUCCESS) {
+            error("While opening PNG: code %d\n", rc);
+            continue;
+        }
+        info("PNG opened.\n    Width:  %d\n    Height: %d\n    Pixel type: %d\n", png_decoder.getWidth(), png_decoder.getHeight(), png_decoder.getPixelType());
+        rc = png_decoder.decode(nullptr, 0);
+        if(rc != PNG_SUCCESS) {
+            error("While decoding PNG: code %d\n", rc);
+            continue;
+        }
+        // Write final line since there isn't a 256th line to trigger it
+        write_line(63);
+        info1("Decoded PNG successfully. Saving to SRAM...\n");
+        maps[to_download[i]["idx"].get<uint32_t>()] = scratch.save(to_download[i]["idx"].get<uint32_t>() * 4096);
+        info1("Saved.\n");
     }
     // Wait for the connection to close
     while(client.connected()) {
