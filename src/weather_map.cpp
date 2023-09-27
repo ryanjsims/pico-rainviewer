@@ -59,6 +59,13 @@ int8_t weather_map::get_dbz(uint8_t row, uint8_t col) const {
     return ((int8_t)m_data[row * 64 + col] & 0x7F) - 32;
 }
 
+void weather_map::set_pixel(uint8_t row, uint8_t col, uint8_t value) {
+    if(row > 63 || col > 63) {
+        return;
+    }
+    m_data[row * 64 + col] = value;
+}
+
 uint8_t *weather_map::data() {
     return m_data;
 }

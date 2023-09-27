@@ -22,6 +22,8 @@ public:
     uint8_t get_grayscale(uint8_t row, uint8_t col) const;
     int8_t get_dbz(uint8_t row, uint8_t col) const;
 
+    void set_pixel(uint8_t row, uint8_t col, uint8_t value);
+
     uint8_t *data();
 private:
     time_t m_timestamp;
