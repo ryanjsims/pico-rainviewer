@@ -319,7 +319,20 @@ int main() {
     while(1) {
         if(!refresh_display && update_maps && ntp.state() == ntp_state::SYNCED) {
             rain_maps.clear();
-            parse_weather_maps(&rain_maps, &generated_timestamp);
+            uint8_t retries = 2;
+            bool success = parse_weather_maps(&rain_maps, &generated_timestamp);
+            while(retries > 0 && !success) {
+                warn("Retrying /public/weather-maps.json (%d retries left)\n", retries);
+                success = parse_weather_maps(&rain_maps, &generated_timestamp);
+                retries--;
+            }
+            if(!success) {
+                // Wait 10 seconds, then try again if no request succeeded
+                add_alarm_in_ms(10 * 1000, update_maps_alarm, &update_maps, true);
+                update_maps = false;
+                continue;
+            }
+            
             info("Rain maps found as:\n%s\n", rain_maps.dump(4).c_str());
 
             datetime_t datetime;
