@@ -2,6 +2,10 @@
 
 #include "pico/multicore.h"
 #include <cstring>
+#include <stdio.h>
+#include "logger.h"
+
+#include "font.h"
 
 std::function<void()> main_loop = [](){};
 
@@ -15,8 +19,18 @@ rgb_matrix<rows, cols>::rgb_matrix()
     , flip_on_vsync(false)
 {
     main_loop = std::bind(&rgb_matrix<rows, cols>::run, this);
-    data_prog_offs = pio_add_program(pio, &hub75e_data_program);
-    row_prog_offs = pio_add_program(pio, &hub75e_row_program);
+    if(pio_can_add_program(pio, &hub75e_data_program)) {
+        data_prog_offs = pio_add_program(pio, &hub75e_data_program);
+    } else {
+        error1("Could not add PIO program `hub75e_data_program`\n");
+        return;
+    }
+    if(pio_can_add_program(pio, &hub75e_row_program)) {
+        row_prog_offs = pio_add_program(pio, &hub75e_row_program);
+    } else {
+        error1("Could not add PIO program `hub75e_row_program`\n");
+        return;
+    }
     hub75e_data_program_init(pio, sm_data, data_prog_offs, DATA_BASE_PIN, CLK_PIN);
     hub75e_row_program_init(pio, sm_row, row_prog_offs, ROWSEL_BASE_PIN, ROWSEL_N_PINS, LATCH_PIN);
 }
@@ -80,8 +94,8 @@ bool rgb_matrix<rows, cols>::flipped() {
 }
 
 template <uint rows, uint cols>
-void rgb_matrix<rows, cols>::set_pixel(uint row, uint col, uint32_t color) {
-    if(row >= rows || col >= cols) {
+void rgb_matrix<rows, cols>::set_pixel(int row, int col, uint32_t color) {
+    if(row >= rows || col >= cols || row < 0 || col < 0) {
         return;
     }
     // Always write to the back buffer
@@ -89,8 +103,8 @@ void rgb_matrix<rows, cols>::set_pixel(uint row, uint col, uint32_t color) {
 }
 
 template <uint rows, uint cols>
-uint32_t rgb_matrix<rows, cols>::get_pixel(uint row, uint col) {
-    if(row >= rows || col >= cols) {
+uint32_t rgb_matrix<rows, cols>::get_pixel(int row, int col) {
+    if(row >= rows || col >= cols || row < 0 || col < 0) {
         return 0;
     }
     // Always read from the front buffer
@@ -98,9 +112,49 @@ uint32_t rgb_matrix<rows, cols>::get_pixel(uint row, uint col) {
 }
 
 template <uint rows, uint cols>
-void rgb_matrix<rows, cols>::set_pixel(uint row, uint col, uint8_t r, uint8_t g, uint8_t b) {
+void rgb_matrix<rows, cols>::set_pixel(int row, int col, uint8_t r, uint8_t g, uint8_t b) {
     uint32_t color = r | ((uint32_t)g) << 8 | ((uint32_t)b) << 16;
     set_pixel(row, col, color);
+}
+
+template <uint rows, uint cols>
+bool rgb_matrix<rows, cols>::draw_char(int row, int col, uint32_t color, unsigned char letter) {
+    if(row + FONT_BOTTOM > rows || col + FONT_RIGHT > cols || row + FONT_TOP < 0 || col + FONT_LEFT < 0) {
+        return false;
+    }
+
+    for(uint8_t i = 0; i < FONT_HEIGHT; i++) {
+        for(uint8_t j = 0; j < FONT_WIDTH; j++) {
+            if((font[letter][i] >> j) & 0x1) {
+                set_pixel(row + i + FONT_TOP, col + FONT_WIDTH - j - 1 + FONT_LEFT, color);
+            }
+        }
+    }
+    return true;
+}
+
+template <uint rows, uint cols>
+bool rgb_matrix<rows, cols>::draw_str(int row, int col, uint32_t color, std::string str) {
+    if(row + FONT_BOTTOM > rows || ((col + FONT_RIGHT) + FONT_WIDTH * (str.size() - 1)) > cols || row + FONT_TOP < 0 || col + FONT_LEFT < 0) {
+        return false;
+    }
+
+    for(int ch = 0; ch < str.size(); ch++) {
+        draw_char(row, col + FONT_WIDTH * ch, color, (unsigned char)str[ch]);
+    }
+    return true;
+}
+
+template <uint rows, uint cols>
+bool rgb_matrix<rows, cols>::draw_str(int row, int col, uint32_t color, std::span<unsigned char> str) {
+    if(row + FONT_BOTTOM > rows || ((col + FONT_RIGHT) + FONT_WIDTH * (str.size() - 1)) > cols || row + FONT_TOP < 0 || col + FONT_LEFT < 0) {
+        return false;
+    }
+
+    for(int ch = 0; ch < str.size(); ch++) {
+        draw_char(row, col + FONT_WIDTH * ch, color, str[ch]);
+    }
+    return true;
 }
 
 template <uint rows, uint cols>
