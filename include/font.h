@@ -8,6 +8,11 @@
 
 #define FONT_WIDTH 4
 #define FONT_HEIGHT 6
+#define FONT_LEFT 0
+#define FONT_TOP -5
+
+#define FONT_RIGHT 4
+#define FONT_BOTTOM 1
 
 const char font[256][6] = {
     // '\x00' - not printable
