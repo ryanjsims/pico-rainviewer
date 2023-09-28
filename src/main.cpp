@@ -312,7 +312,7 @@ int main() {
             add_alarm_in_ms(delay_seconds * 1000, update_maps_alarm, &update_maps, true);
             info("Will alarm in %d seconds\n", delay_seconds);
 
-            download_weather_maps(rain_maps, LAT, LNG, 8);
+            download_weather_maps(rain_maps, LAT, LNG, ZOOM);
             update_maps = false;
             time.tm_isdst = -1;
 

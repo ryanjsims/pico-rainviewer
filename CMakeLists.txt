@@ -54,6 +54,7 @@ target_compile_definitions(pico_rainviewer PRIVATE
     "LOG_LEVEL=$ENV{LOG_LEVEL}"
     "LAT=$ENV{LAT}"
     "LNG=$ENV{LNG}"
+    "ZOOM=$ENV{ZOOM}"
     "TIMEZONE=\"$ENV{TIMEZONE}\""
 )
 target_link_options(pico_rainviewer PRIVATE "-Wl,--print-memory-usage")
