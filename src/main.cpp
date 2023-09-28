@@ -133,7 +133,7 @@ uint8_t lines[4][256];
 void write_line(int row) {
     debug("Writing line %d to scratch weather map\n", row);
     for(int col = 0; col < 64; col++) {
-        uint16_t sum;
+        uint16_t sum = 0;
         for(int i = 0; i < 4; i++) {
             for(int j = 0; j < 4; j++) {
                 sum += lines[i][col * 4 + j];
