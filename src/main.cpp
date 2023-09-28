@@ -241,6 +241,17 @@ int64_t update_maps_alarm(alarm_id_t alarm, void* user_data) {
     return 0;
 }
 
+struct refresh_data {
+    int64_t period;
+    bool *refresh_display;
+};
+
+int64_t refresh_display_alarm(alarm_id_t alarm, void* user_data) {
+    refresh_data* data = (refresh_data*)user_data;
+    *data->refresh_display = true;
+    return -data->period;
+}
+
 int main() {
     stdio_init_all();
     rtc_init();
@@ -288,6 +299,13 @@ int main() {
     matrix->start();
 
     bool update_maps = true;
+    bool refresh_display = true;
+    refresh_data refresh_config;
+    refresh_config.refresh_display = &refresh_display;
+    refresh_config.period = 2000000;
+    alarm_id_t refresh_alarm = -1;
+
+    uint8_t display_index = 0;
 
     ntp_client ntp("pool.ntp.org");
     // Repeat sync once per day at 10am UTC (3am AZ)
@@ -299,7 +317,7 @@ int main() {
     char buf[128];
 
     while(1) {
-        if(update_maps && ntp.state() == ntp_state::SYNCED) {
+        if(!refresh_display && update_maps && ntp.state() == ntp_state::SYNCED) {
             rain_maps.clear();
             parse_weather_maps(&rain_maps, &generated_timestamp);
             info("Rain maps found as:\n%s\n", rain_maps.dump(4).c_str());
@@ -321,7 +339,35 @@ int main() {
 
             info("Updated maps, sleeping until %s\n", buf);
         }
-        sleep_ms(10);
+
+        if(refresh_display && ntp.state() == ntp_state::SYNCED) {
+            if(refresh_alarm == -1) {
+                refresh_alarm = add_alarm_in_us(refresh_config.period, refresh_display_alarm, &refresh_config, true);
+            }
+            scratch.load(maps[display_index]);
+            display_index = (display_index + 1) % 16;
+            for(int row = 0; row < 64; row++) {
+                for(int col = 0; col < 64; col++) {
+                    matrix->set_pixel(row, col, scratch.get_color(row, col, weather_channel_color_table));
+                }
+            }
+            datetime_t datetime;
+            rtc_get_datetime(&datetime);
+            struct tm time = ntp_client::localtime(datetime);
+            char date_str[8];
+            char time_str[8];
+            char map_time_str[8];
+            size_t date_len = std::strftime(date_str, 8, "%m-%d", &time);
+            size_t time_len = std::strftime(time_str, 8, "%R", &time);
+            struct tm map_time = ntp_client::localtime(scratch.timestamp());
+            size_t map_time_len = std::strftime(map_time_str, 8, "%R", &map_time);
+
+            matrix->draw_str(11, 2, 0xFFFFFFFF, {date_str, date_len});
+            matrix->draw_str(17, 2, 0xFFFFFFFF, {time_str, time_len});
+            matrix->draw_str(23, 2, 0xFFFFFFFF, {map_time_str, map_time_len});
+            matrix->flip_buffer();
+            refresh_display = false;
+        }
     }
 
     return 0;
