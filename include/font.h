@@ -6,6 +6,9 @@
 // To change the font used, load your own font file there and run convert_bdf.py
 // from the scripts directory.
 
+#define FONT_WIDTH 4
+#define FONT_HEIGHT 6
+
 const char font[256][6] = {
     // '\x00' - not printable
     {
