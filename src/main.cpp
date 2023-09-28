@@ -51,7 +51,6 @@ using namespace nlohmann::detail;
 
 weather_map_ext maps[16];
 weather_map scratch;
-rgb_matrix<64, 64> matrix;
 PNG png_decoder;
 
 void dump_bytes(const uint8_t *bptr, uint32_t len) {
@@ -247,9 +246,7 @@ int main() {
     rtc_init();
     setenv("TZ", TIMEZONE, 1);
     tzset();
-    matrix.clear();
-    matrix.flip_buffer();
-    matrix.start();
+
     if(cyw43_arch_init_with_country(CYW43_COUNTRY_USA)) {
         printf("Wi-Fi init failed");
         return -1;
@@ -284,6 +281,11 @@ int main() {
             status = new_status;
         }
     }
+
+    rgb_matrix<64, 64> *matrix = new rgb_matrix<64, 64>();
+    matrix->clear();
+    matrix->flip_buffer();
+    matrix->start();
 
     bool update_maps = true;
 
