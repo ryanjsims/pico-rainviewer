@@ -3,6 +3,9 @@
 #include <hardware/dma.h>
 #include <hardware/spi.h>
 
+#include "logger.h"
+#include "stdio.h"
+
 weather_map::weather_map()
     : m_timestamp(0)
     , m_nowcast(false)
@@ -70,6 +73,19 @@ void weather_map::set_pixel(uint8_t row, uint8_t col, uint8_t value) {
 
 uint8_t *weather_map::data() {
     return m_data;
+}
+
+void weather_map::dump(uint8_t number) const {
+    info("Weather map %d dump:\n", number);
+    for(int row = 0; row < 64; row++) {
+        for(int col = 0; col < 64; col++) {
+            if(col % 8 == 0 && col != 0) {
+                printf(" ");
+            }
+            printf("%02x ", m_data[row * 64 + col]);
+        }
+        printf("\n");
+    }
 }
 
 void weather_map::set_timestamp(time_t new_timestamp) {

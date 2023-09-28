@@ -25,6 +25,8 @@ public:
     void set_pixel(uint8_t row, uint8_t col, uint8_t value);
 
     uint8_t *data();
+
+    void dump(uint8_t number) const;
 private:
     time_t m_timestamp;
     bool m_nowcast;
