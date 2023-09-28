@@ -93,7 +93,7 @@ void netif_status_callback(netif* netif) {
     }
 }
 
-void parse_weather_maps(json *array, uint64_t* generated) {
+bool parse_weather_maps(json *array, uint64_t* generated) {
     assert(array->type() == value_t::array);
     assert(generated != nullptr);
     http_client client("https://api.rainviewer.com", {(uint8_t*)ISRG_ROOT_X1_CERT, sizeof(ISRG_ROOT_X1_CERT)});
@@ -122,6 +122,12 @@ void parse_weather_maps(json *array, uint64_t* generated) {
         sleep_ms(10);
         i--;
     }
+    // Wait for the connection to close
+    while(client.connected()) {
+        sleep_ms(10);
+    }
+    uint16_t status = client.response().status();
+    return status >= 200 && status < 300;
 }
 
 uint8_t lines[4][256];
