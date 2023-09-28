@@ -55,7 +55,6 @@ PNG png_decoder;
 
 void dump_bytes(const uint8_t *bptr, uint32_t len) {
     unsigned int i = 0;
-    sizeof(weather_map) * 16;
     info("dump_bytes %d", len);
     for (i = 0; i < len;) {
         if ((i & 0x0f) == 0) {
