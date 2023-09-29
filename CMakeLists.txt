@@ -30,21 +30,23 @@ add_executable(pico_rainviewer
     src/main.cpp
     src/rgb_matrix.cpp
     src/weather_map.cpp
+    src/MC_23LCV1024.cpp
 )
 
 pico_generate_pio_header(pico_rainviewer ${CMAKE_CURRENT_LIST_DIR}/src/pio/hub75e.pio)
 target_include_directories(pico_rainviewer PUBLIC include)
 target_link_libraries(pico_rainviewer PRIVATE
-    pico_stdlib
     pico_cyw43_arch_lwip_threadsafe_background
     pico_lwip_mbedtls
     pico_mbedtls
     pico_multicore
+    pico_stdlib
     pico_web_client
-    hardware_rtc
+    hardware_adc
     hardware_dma
-    hardware_spi
     hardware_pio
+    hardware_rtc
+    hardware_spi
     PNGdec
 )
 target_compile_options(pico_rainviewer PRIVATE "-Wno-psabi")
