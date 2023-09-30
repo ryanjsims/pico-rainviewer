@@ -2,12 +2,17 @@
 
 #include <stdint.h>
 #include <time.h>
+#include <string>
+
+#include <http_client.h>
+
+#include "MC_23LCV1024.h"
 
 class weather_map_ext;
 
 class weather_map {
 public:
-    weather_map();
+    weather_map(MC_23LCV1024* sram);
 
     weather_map& load(const weather_map_ext& other, bool load = true);
     weather_map_ext save(uint32_t address);
@@ -27,10 +32,12 @@ public:
     uint8_t *data();
 
     void dump(uint8_t number) const;
+    void clear();
 private:
     time_t m_timestamp;
     bool m_nowcast;
     uint8_t m_data[4096];
+    MC_23LCV1024* m_sram;
 };
 
 class weather_map_ext {

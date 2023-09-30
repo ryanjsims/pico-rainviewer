@@ -1,16 +1,21 @@
 #include "weather_map.h"
 
-#include <hardware/dma.h>
-#include <hardware/spi.h>
+#include <stdio.h>
+#include <string.h>
 
 #include "logger.h"
-#include "stdio.h"
 
-weather_map::weather_map()
+weather_map::weather_map(MC_23LCV1024* sram)
     : m_timestamp(0)
     , m_nowcast(false)
-    , m_data({0})
-{}
+    , m_data{0}
+    , m_sram(sram)
+{
+    if(m_sram->get_mode() != MC_23LCV1024::mode::full) {
+        m_sram->set_mode(MC_23LCV1024::mode::full);
+    }
+    info("SPI baud set to: %d\n", m_sram->baud());
+}
 
 time_t weather_map::timestamp() const {
     return m_timestamp;
@@ -21,6 +26,10 @@ weather_map& weather_map::load(const weather_map_ext& other, bool load) {
     m_nowcast = other.m_nowcast;
     if(load) {
         // spi read 4096 bytes from other.m_address to m_data
+        int32_t read = m_sram->read(other.address(), {m_data, sizeof(m_data)});
+        debug("Read %d bytes from 0x%05x\n", read, other.address());
+    } else {
+        debug1("Not loading from sram.\n");
     }
     return *this;
 }
@@ -31,6 +40,8 @@ weather_map_ext weather_map::save(uint32_t address) {
     to_return.m_nowcast = m_nowcast;
     to_return.m_address = address;
     // spi write 4096 bytes from m_data to address
+    int32_t wrote = m_sram->write(address, {m_data, sizeof(m_data)});
+    info("Wrote %d bytes to 0x%05x\n", wrote, address);
     to_return.m_init = true;
     return to_return;
 }
@@ -86,6 +97,11 @@ void weather_map::dump(uint8_t number) const {
         }
         printf("\n");
     }
+}
+
+void weather_map::clear() {
+    memset(m_data, 0x00, sizeof(m_data));
+    m_sram->clear();
 }
 
 void weather_map::set_timestamp(time_t new_timestamp) {
