@@ -20,6 +20,7 @@ public:
 
     int32_t read(uint32_t addr, std::span<uint8_t> dst);
     int32_t write(uint32_t addr, std::span<uint8_t> src);
+    void clear();
 
     void set_mode(mode new_mode);
     mode get_mode();
@@ -30,5 +31,5 @@ public:
 
     static const uint32_t SIZE = 0x20000;
 private:
-    uint32_t m_baud;
+    static uint32_t m_baud;
 };

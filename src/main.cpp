@@ -13,6 +13,7 @@
 #include "color_tables.h"
 #include "weather_map.h"
 #include "rgb_matrix.h"
+#include "MC_23LCV1024.h"
 
 const char ISRG_ROOT_X1_CERT[] = "-----BEGIN CERTIFICATE-----\n\
 MIIFYDCCBEigAwIBAgIQQAF3ITfU6UK47naqPGQKtzANBgkqhkiG9w0BAQsFADA/\n\
@@ -50,8 +51,21 @@ using namespace nlohmann;
 using namespace nlohmann::detail;
 
 weather_map_ext maps[16];
-weather_map scratch;
 PNG png_decoder;
+
+#define DEFAULT_PALETTE 4
+
+const uint32_t* palettes[] = {
+    black_and_white_color_table,
+    original_color_table,
+    universal_blue_color_table,
+    titan_color_table,
+    weather_channel_color_table,
+    meteored_color_table,
+    nexrad_level_iii_color_table,
+    rainbow_at_selex_si_color_table,
+    dark_sky_color_table
+};
 
 void dump_bytes(const uint8_t *bptr, uint32_t len) {
     unsigned int i = 0;
@@ -129,7 +143,7 @@ bool parse_weather_maps(json *array, uint64_t* generated) {
 }
 
 uint8_t lines[4][256];
-void write_line(int row) {
+void write_line(int row, weather_map* scratch) {
     debug("Writing line %d to scratch weather map\n", row);
     for(int col = 0; col < 64; col++) {
         uint16_t sum = 0;
@@ -138,14 +152,15 @@ void write_line(int row) {
                 sum += lines[i][col * 4 + j];
             }
         }
-        scratch.set_pixel(row, col, sum / 16);
+        scratch->set_pixel(row, col, sum / 16);
     }
 }
 
 void png_draw_callback(PNGDRAW *draw) {
+    weather_map* scratch = (weather_map*)draw->pUser;
     if(draw->y % 4 == 0 && draw->y != 0) {
         int row = (draw->y / 4) - 1;
-        write_line(row);
+        write_line(row, scratch);
     }
     int stride = draw->iPitch / draw->iWidth;
     for(int i = 0; i < draw->iWidth; i++) {
@@ -153,7 +168,40 @@ void png_draw_callback(PNGDRAW *draw) {
     }
 }
 
-uint8_t download_weather_maps(json& rain_maps, double lat, double lon, uint8_t z) {
+bool download_full_map(weather_map* scratch, http_client &client, std::string target, bool final, uint32_t map_index) {
+    client.header("Connection", final ? "close" : "keep-alive");
+    client.get(target);
+    uint32_t timeout = 3000;
+    while(timeout > 0 && !client.has_response()) {
+        sleep_ms(10);
+        timeout--;
+    }
+    if(timeout == 0) {
+        error1("Timed out!\n");
+        return false;
+    }
+    const http_response& response = client.response();
+    if(response.get_body().size() > 0) {
+        int rc = png_decoder.openRAM((uint8_t*)response.get_body().data(), response.get_body().size(), png_draw_callback);
+        if(rc != PNG_SUCCESS) {
+            error("While opening PNG: code %d\n", rc);
+            return false;
+        }
+        info("PNG opened.\n    Width:  %d\n    Height: %d\n    Pixel type: %d\n", png_decoder.getWidth(), png_decoder.getHeight(), png_decoder.getPixelType());
+        rc = png_decoder.decode(scratch, 0);
+        if(rc != PNG_SUCCESS) {
+            error("While decoding PNG: code %d\n", rc);
+            return false;
+        }
+        // Write final line since there isn't a 256th line to trigger it
+        write_line(63, scratch);
+        info1("Decoded PNG successfully. Saving to SRAM...\n");
+        maps[map_index] = scratch->save(map_index * 4096);
+        info1("Saved.\n");
+    }
+    return true;
+}
+uint8_t download_weather_maps(json& rain_maps, double lat, double lon, uint8_t z, weather_map* scratch) {
     uint8_t start = 0, count = rain_maps.size();
     uint32_t first_timestamp = rain_maps[0]["time"];
     for(uint8_t i = 0; i < count; i++) {
@@ -181,9 +229,11 @@ uint8_t download_weather_maps(json& rain_maps, double lat, double lon, uint8_t z
     client.on_response([&client]() {
         const http_response& response = client.response();
         info("Got response: %d %s\n", response.status(), response.get_status_text().c_str());
+        auto& headers = response.get_headers();
         if(response.status() == 200) {
-            auto headers = response.get_headers();
-            info("Received %s of size %s\n", headers["Content-Type"].c_str(), headers["Content-Length"].c_str());
+            info("Received %s of size %s\n", headers.at("Content-Type").c_str(), headers.at("Content-Length").c_str());
+        } else if(response.status() == 206) {
+            info("Receiving %s of range %s\n", headers.at("Content-Type").c_str(), headers.at("Content-Range").c_str());
         }
     });
 
@@ -193,39 +243,32 @@ uint8_t download_weather_maps(json& rain_maps, double lat, double lon, uint8_t z
             i = retry;
             retry = -1;
         }
-        client.header("Connection", i == to_download.size() - 1 ? "close" : "keep-alive");
         char buf[64];
         sprintf(buf, "/256/%d/%.4lf/%.4lf/0/0_1.png", z, lat, lon);
-        info("Requesting %s\n", (to_download[i]["path"].get<std::string>() + buf).c_str());
-        client.get(to_download[i]["path"].get<std::string>() + buf);
+        std::string target = to_download[i]["path"].get<std::string>() + buf;
+        info("Requesting %s\n", target.c_str());
+        client.head(target);
         uint32_t timeout = 3000;
         while(timeout > 0 && !client.has_response()) {
             sleep_ms(10);
             timeout--;
         }
         if(timeout == 0) {
-            error1("Timed out!");
+            error1("Timed out!\n");
             retry = i;
             continue;
         }
-        scratch.load(maps[to_download[i]["idx"].get<uint32_t>()], false);
         const http_response& response = client.response();
-        int rc = png_decoder.openRAM((uint8_t*)response.get_body().data(), response.get_body().size(), png_draw_callback);
-        if(rc != PNG_SUCCESS) {
-            error("While opening PNG: code %d\n", rc);
-            continue;
+        int length = std::stoi(response.get_headers().at("Content-Length"));
+        scratch->load(maps[to_download[i]["idx"].get<uint32_t>()], false);
+        if(length < TCP_WND) {
+            download_full_map(scratch, client, target, i == to_download.size() - 1, to_download[i]["idx"].get<uint32_t>());
+        } else if(response.get_headers().at("Accept-Ranges") == "bytes") {
+            // download_chunked_map(scratch, client, target, i == to_download.size() - 1, to_download[i]["idx"].get<uint32_t>(), length);
+            info1("Would try partial download here.\n");
+        } else {
+            info1("Cannot download image, partial download not supported for this image.\n");
         }
-        info("PNG opened.\n    Width:  %d\n    Height: %d\n    Pixel type: %d\n", png_decoder.getWidth(), png_decoder.getHeight(), png_decoder.getPixelType());
-        rc = png_decoder.decode(nullptr, 0);
-        if(rc != PNG_SUCCESS) {
-            error("While decoding PNG: code %d\n", rc);
-            continue;
-        }
-        // Write final line since there isn't a 256th line to trigger it
-        write_line(63);
-        info1("Decoded PNG successfully. Saving to SRAM...\n");
-        maps[to_download[i]["idx"].get<uint32_t>()] = scratch.save(to_download[i]["idx"].get<uint32_t>() * 4096);
-        info1("Saved.\n");
     }
     // Wait for the connection to close
     while(client.connected()) {
@@ -251,11 +294,32 @@ int64_t refresh_display_alarm(alarm_id_t alarm, void* user_data) {
     return -data->period;
 }
 
+volatile uint8_t current_palette = DEFAULT_PALETTE;
+absolute_time_t last_call = get_absolute_time();
+void change_palette_interrupt(uint pin, uint32_t event_mask) {
+    // Wait at least 1/4 second between changes
+    absolute_time_t prev = last_call, now = get_absolute_time();
+    if(absolute_time_diff_us(prev, now) < 250000) {
+        return;
+    }
+    last_call = now;
+    current_palette = (current_palette + 1) % (sizeof(palettes) / sizeof(uint32_t*));
+}
+
+uint32_t forward_distance_mod_n(int32_t first, int32_t second, uint32_t n) {
+    int32_t distance = (second % n) - (first % n);
+    return distance >= 0 ? distance : n + distance;
+}
+
 int main() {
     stdio_init_all();
     rtc_init();
     setenv("TZ", TIMEZONE, 1);
     tzset();
+
+    gpio_set_dir(15, false);
+    gpio_set_pulls(15, true, false);
+    gpio_set_irq_enabled_with_callback(15, GPIO_IRQ_EDGE_FALL, true, change_palette_interrupt);
 
     if(cyw43_arch_init_with_country(CYW43_COUNTRY_USA)) {
         printf("Wi-Fi init failed");
@@ -292,17 +356,21 @@ int main() {
         }
     }
 
+    MC_23LCV1024 spi_sram(15625000);
+    weather_map scratch{&spi_sram};
+    scratch.clear();
+
     rgb_matrix<64, 64> *matrix = new rgb_matrix<64, 64>();
     matrix->clear();
-    matrix->flip_buffer();
     matrix->start();
 
     bool update_maps = true;
     bool refresh_display = true;
     refresh_data refresh_config;
     refresh_config.refresh_display = &refresh_display;
-    refresh_config.period = 2000000;
+    refresh_config.period = 100000;
     alarm_id_t refresh_alarm = -1;
+    uint32_t map_advance = 0;
 
     uint8_t display_index = 0;
 
@@ -314,6 +382,8 @@ int main() {
     json rain_maps = json::array();
     uint64_t generated_timestamp = 0;
     char buf[128];
+
+    uint8_t start = 0;
 
     while(1) {
         if(!refresh_display && update_maps && ntp.state() == ntp_state::SYNCED) {
@@ -342,7 +412,7 @@ int main() {
             add_alarm_in_ms(delay_seconds * 1000, update_maps_alarm, &update_maps, true);
             info("Will alarm in %d seconds\n", delay_seconds);
 
-            download_weather_maps(rain_maps, LAT, LNG, ZOOM);
+            start = download_weather_maps(rain_maps, LAT, LNG, ZOOM, &scratch);
             update_maps = false;
             time.tm_isdst = -1;
 
@@ -356,11 +426,20 @@ int main() {
             if(refresh_alarm == -1) {
                 refresh_alarm = add_alarm_in_us(refresh_config.period, refresh_display_alarm, &refresh_config, true);
             }
-            scratch.load(maps[display_index]);
-            display_index = (display_index + 1) % 16;
+            if(scratch.timestamp() != maps[display_index].timestamp()) {
+                debug1("Loading weather map from SRAM...\n");
+                scratch.load(maps[display_index]);
+            }
+
+            if(map_advance >= 600) {
+                map_advance = 0;
+                display_index = (display_index + 1) % 16;
+            }
+            map_advance += 60;
+
             for(int row = 0; row < 64; row++) {
                 for(int col = 0; col < 64; col++) {
-                    matrix->set_pixel(row, col, scratch.get_color(row, col, weather_channel_color_table));
+                    matrix->set_pixel(row, col, scratch.get_color(row, col, palettes[current_palette]));
                 }
             }
             datetime_t datetime;
@@ -377,6 +456,14 @@ int main() {
             matrix->draw_str(11, 2, 0xFFFFFFFF, {date_str, date_len});
             matrix->draw_str(17, 2, 0xFFFFFFFF, {time_str, time_len});
             matrix->draw_str(23, 2, 0xFFFFFFFF, {map_time_str, map_time_len});
+            for(int i = 1; i <= 8; i++) {
+                matrix->set_pixel(62, i - 1, palettes[current_palette][16 * i - 1]);
+                matrix->set_pixel(63, i - 1, palettes[current_palette][(16 * i - 1) | 0x80]);
+            }
+            uint32_t distance = forward_distance_mod_n(start, display_index, 16);
+            for(int i = 0; i < 16; i++) {
+                matrix->set_pixel(63, i + 24, (MAX(255 - 20 * (i + 1), 10)) & 0xFF | (MAX(10, 85 * (i + 1 - 13)) & 0xFF) << 16 | (i == distance ? 0x0000b700 : 0));
+            }
             matrix->flip_buffer();
             refresh_display = false;
         }
