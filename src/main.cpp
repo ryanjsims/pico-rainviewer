@@ -105,7 +105,7 @@ void netif_status_callback(netif* netif) {
     }
 }
 
-bool parse_weather_maps(json *array, uint64_t* generated) {
+bool parse_weather_maps(json *array, uint64_t* generated, repeating_timer_t* timer) {
     assert(array->type() == value_t::array);
     assert(generated != nullptr);
     http_client client("https://api.rainviewer.com", {(uint8_t*)ISRG_ROOT_X1_CERT, sizeof(ISRG_ROOT_X1_CERT)});
@@ -128,12 +128,14 @@ bool parse_weather_maps(json *array, uint64_t* generated) {
     });
 
     client.header("Connection", "close");
+    cancel_repeating_timer(timer);
     client.get("/public/weather-maps.json");
     uint32_t i = 3000;
     while(i > 0 && !responded) {
         sleep_ms(10);
         i--;
     }
+    add_repeating_timer_us(timer->delay_us, timer->callback, timer->user_data, timer);
     // Wait for the connection to close
     while(client.connected()) {
         sleep_ms(10);
@@ -247,6 +249,7 @@ uint8_t download_weather_maps(json& rain_maps, double lat, double lon, uint8_t z
         sprintf(buf, "/256/%d/%.4lf/%.4lf/0/0_1.png", z, lat, lon);
         std::string target = to_download[i]["path"].get<std::string>() + buf;
         info("Requesting %s\n", target.c_str());
+        cancel_repeating_timer(timer);
         client.head(target);
         uint32_t timeout = 3000;
         while(timeout > 0 && !client.has_response()) {
@@ -269,6 +272,7 @@ uint8_t download_weather_maps(json& rain_maps, double lat, double lon, uint8_t z
         } else {
             info1("Cannot download image, partial download not supported for this image.\n");
         }
+        add_repeating_timer_us(timer->delay_us, timer->callback, timer->user_data, timer);
     }
     // Wait for the connection to close
     while(client.connected()) {
@@ -284,14 +288,28 @@ int64_t update_maps_alarm(alarm_id_t alarm, void* user_data) {
 }
 
 struct refresh_data {
-    int64_t period;
-    bool *refresh_display;
+    rgb_matrix<64, 64>* matrix;
+    MC_23LCV1024* sram;
+    const uint8_t *start;
+    uint8_t display_index;
+    uint32_t map_advance;
+    uint32_t map_increment;
 };
 
-int64_t refresh_display_alarm(alarm_id_t alarm, void* user_data) {
-    refresh_data* data = (refresh_data*)user_data;
-    *data->refresh_display = true;
-    return -data->period;
+void redraw_map(rgb_matrix<64, 64>*, MC_23LCV1024*, uint8_t, uint8_t);
+
+bool refresh_display_timer(repeating_timer_t* rt) {
+    refresh_data* data = (refresh_data*)rt->user_data;
+    trace("Redrawing map...\n    map_advance = %d\n    display_index = %d\n", data->map_advance, data->display_index);
+    redraw_map(data->matrix, data->sram, *data->start, data->display_index);
+
+    if(data->map_advance >= 600) {
+        data->map_advance = 0;
+        data->display_index = (data->display_index + 1) % 16;
+    }
+    data->map_advance += data->map_increment;
+    trace1("Redrew map.\n");
+    return true;
 }
 
 volatile uint8_t current_palette = DEFAULT_PALETTE;
@@ -309,6 +327,41 @@ void change_palette_interrupt(uint pin, uint32_t event_mask) {
 uint32_t forward_distance_mod_n(int32_t first, int32_t second, uint32_t n) {
     int32_t distance = (second % n) - (first % n);
     return distance >= 0 ? distance : n + distance;
+}
+
+void redraw_map(rgb_matrix<64, 64>* matrix, MC_23LCV1024* sram, uint8_t start, uint8_t display_index) {
+    uint32_t index = display_index * 4096;
+    uint8_t pixel = 0;
+    for(int row = 0; row < 64; row++) {
+        for(int col = 0; col < 64; col++) {
+            // row * 64 + col
+            sram->read(index + row * 64 + col, {&pixel, 1});
+            matrix->set_pixel(row, col, palettes[current_palette][pixel]);
+        }
+    }
+    datetime_t datetime;
+    rtc_get_datetime(&datetime);
+    struct tm time = ntp_client::localtime(datetime);
+    char date_str[8];
+    char time_str[8];
+    char map_time_str[8];
+    size_t date_len = std::strftime(date_str, 8, "%m-%d", &time);
+    size_t time_len = std::strftime(time_str, 8, "%R", &time);
+    struct tm map_time = ntp_client::localtime(maps[display_index].timestamp());
+    size_t map_time_len = std::strftime(map_time_str, 8, "%R", &map_time);
+
+    matrix->draw_str(11, 2, 0xFFFFFFFF, {date_str, date_len});
+    matrix->draw_str(17, 2, 0xFFFFFFFF, {time_str, time_len});
+    matrix->draw_str(23, 2, 0xFFFFFFFF, {map_time_str, map_time_len});
+    for(int i = 1; i <= 8; i++) {
+        matrix->set_pixel(62, i - 1, palettes[current_palette][16 * i - 1]);
+        matrix->set_pixel(63, i - 1, palettes[current_palette][(16 * i - 1) | 0x80]);
+    }
+    uint32_t distance = forward_distance_mod_n(start, display_index, 16);
+    for(int i = 0; i < 16; i++) {
+        matrix->set_pixel(63, i + 24, (MAX(255 - 20 * (i + 1), 10)) & 0xFF | (MAX(10, 85 * (i + 1 - 13)) & 0xFF) << 16 | (i == distance ? 0x0000b700 : 0));
+    }
+    matrix->flip_buffer();
 }
 
 int main() {
@@ -365,14 +418,17 @@ int main() {
     matrix->start();
 
     bool update_maps = true;
-    bool refresh_display = true;
+    uint8_t start = 0;
     refresh_data refresh_config;
-    refresh_config.refresh_display = &refresh_display;
-    refresh_config.period = 100000;
-    alarm_id_t refresh_alarm = -1;
-    uint32_t map_advance = 0;
+    refresh_config.matrix = matrix;
+    refresh_config.sram = &spi_sram;
+    refresh_config.start = &start;
+    refresh_config.display_index = 0;
+    refresh_config.map_advance = 0;
+    refresh_config.map_increment = 60;
+    repeating_timer_t timer_data;
 
-    uint8_t display_index = 0;
+    bool success = add_repeating_timer_us(-100000, refresh_display_timer, &refresh_config, &timer_data);
 
     ntp_client ntp("pool.ntp.org");
     // Repeat sync once per day at 10am UTC (3am AZ)
@@ -383,16 +439,14 @@ int main() {
     uint64_t generated_timestamp = 0;
     char buf[128];
 
-    uint8_t start = 0;
-
     while(1) {
-        if(!refresh_display && update_maps && ntp.state() == ntp_state::SYNCED) {
+        if(update_maps && ntp.state() == ntp_state::SYNCED) {
             rain_maps.clear();
             uint8_t retries = 2;
-            bool success = parse_weather_maps(&rain_maps, &generated_timestamp);
+            bool success = parse_weather_maps(&rain_maps, &generated_timestamp, &timer_data);
             while(retries > 0 && !success) {
                 warn("Retrying /public/weather-maps.json (%d retries left)\n", retries);
-                success = parse_weather_maps(&rain_maps, &generated_timestamp);
+                success = parse_weather_maps(&rain_maps, &generated_timestamp, &timer_data);
                 retries--;
             }
             if(!success) {
@@ -412,7 +466,7 @@ int main() {
             add_alarm_in_ms(delay_seconds * 1000, update_maps_alarm, &update_maps, true);
             info("Will alarm in %d seconds\n", delay_seconds);
 
-            start = download_weather_maps(rain_maps, LAT, LNG, ZOOM, &scratch);
+            start = download_weather_maps(rain_maps, LAT, LNG, ZOOM, &scratch, &timer_data);
             update_maps = false;
             time.tm_isdst = -1;
 
@@ -420,52 +474,6 @@ int main() {
             std::strftime(buf, 128, "%F %T UTC%z", localtime_r(&converted, &time));
 
             info("Updated maps, sleeping until %s\n", buf);
-        }
-
-        if(refresh_display && ntp.state() == ntp_state::SYNCED) {
-            if(refresh_alarm == -1) {
-                refresh_alarm = add_alarm_in_us(refresh_config.period, refresh_display_alarm, &refresh_config, true);
-            }
-            if(scratch.timestamp() != maps[display_index].timestamp()) {
-                debug1("Loading weather map from SRAM...\n");
-                scratch.load(maps[display_index]);
-            }
-
-            if(map_advance >= 600) {
-                map_advance = 0;
-                display_index = (display_index + 1) % 16;
-            }
-            map_advance += 60;
-
-            for(int row = 0; row < 64; row++) {
-                for(int col = 0; col < 64; col++) {
-                    matrix->set_pixel(row, col, scratch.get_color(row, col, palettes[current_palette]));
-                }
-            }
-            datetime_t datetime;
-            rtc_get_datetime(&datetime);
-            struct tm time = ntp_client::localtime(datetime);
-            char date_str[8];
-            char time_str[8];
-            char map_time_str[8];
-            size_t date_len = std::strftime(date_str, 8, "%m-%d", &time);
-            size_t time_len = std::strftime(time_str, 8, "%R", &time);
-            struct tm map_time = ntp_client::localtime(scratch.timestamp());
-            size_t map_time_len = std::strftime(map_time_str, 8, "%R", &map_time);
-
-            matrix->draw_str(11, 2, 0xFFFFFFFF, {date_str, date_len});
-            matrix->draw_str(17, 2, 0xFFFFFFFF, {time_str, time_len});
-            matrix->draw_str(23, 2, 0xFFFFFFFF, {map_time_str, map_time_len});
-            for(int i = 1; i <= 8; i++) {
-                matrix->set_pixel(62, i - 1, palettes[current_palette][16 * i - 1]);
-                matrix->set_pixel(63, i - 1, palettes[current_palette][(16 * i - 1) | 0x80]);
-            }
-            uint32_t distance = forward_distance_mod_n(start, display_index, 16);
-            for(int i = 0; i < 16; i++) {
-                matrix->set_pixel(63, i + 24, (MAX(255 - 20 * (i + 1), 10)) & 0xFF | (MAX(10, 85 * (i + 1 - 13)) & 0xFF) << 16 | (i == distance ? 0x0000b700 : 0));
-            }
-            matrix->flip_buffer();
-            refresh_display = false;
         }
     }
 
