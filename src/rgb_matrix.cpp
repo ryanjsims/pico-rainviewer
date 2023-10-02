@@ -119,10 +119,6 @@ void rgb_matrix<rows, cols>::set_pixel(int row, int col, uint8_t r, uint8_t g, u
 
 template <uint rows, uint cols>
 bool rgb_matrix<rows, cols>::draw_char(int row, int col, uint32_t color, unsigned char letter) {
-    if(row + FONT_BOTTOM > rows || col + FONT_RIGHT > cols || row + FONT_TOP < 0 || col + FONT_LEFT < 0) {
-        return false;
-    }
-
     for(uint8_t i = 0; i < FONT_HEIGHT; i++) {
         for(uint8_t j = 0; j < FONT_WIDTH; j++) {
             if((font[letter][i] >> j) & 0x1) {
@@ -135,11 +131,12 @@ bool rgb_matrix<rows, cols>::draw_char(int row, int col, uint32_t color, unsigne
 
 template <uint rows, uint cols>
 bool rgb_matrix<rows, cols>::draw_str(int row, int col, uint32_t color, std::string str) {
-    if(row + FONT_BOTTOM > rows || ((col + FONT_RIGHT) + FONT_WIDTH * (str.size() - 1)) > cols || row + FONT_TOP < 0 || col + FONT_LEFT < 0) {
-        return false;
-    }
-
     for(int ch = 0; ch < str.size(); ch++) {
+        if(col + FONT_WIDTH * ch <= -FONT_WIDTH) {
+            continue;
+        } else if (col + FONT_WIDTH * ch > 63) {
+            break;
+        }
         draw_char(row, col + FONT_WIDTH * ch, color, (unsigned char)str[ch]);
     }
     return true;
@@ -147,11 +144,12 @@ bool rgb_matrix<rows, cols>::draw_str(int row, int col, uint32_t color, std::str
 
 template <uint rows, uint cols>
 bool rgb_matrix<rows, cols>::draw_str(int row, int col, uint32_t color, std::span<unsigned char> str) {
-    if(row + FONT_BOTTOM > rows || ((col + FONT_RIGHT) + FONT_WIDTH * (str.size() - 1)) > cols || row + FONT_TOP < 0 || col + FONT_LEFT < 0) {
-        return false;
-    }
-
     for(int ch = 0; ch < str.size(); ch++) {
+        if(col + FONT_WIDTH * ch <= -FONT_WIDTH) {
+            continue;
+        } else if (col + FONT_WIDTH * ch > 63) {
+            break;
+        }
         draw_char(row, col + FONT_WIDTH * ch, color, str[ch]);
     }
     return true;
