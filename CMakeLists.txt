@@ -49,7 +49,7 @@ target_link_libraries(pico_rainviewer PRIVATE
     hardware_spi
     PNGdec
 )
-target_compile_options(pico_rainviewer PRIVATE "-Wno-psabi")
+target_compile_options(pico_rainviewer PRIVATE "-Wno-psabi" "-fcoroutines")
 target_compile_definitions(pico_rainviewer PRIVATE 
     "WIFI_SSID=\"$ENV{WIFI_SSID}\""
     "WIFI_PASSWORD=\"$ENV{WIFI_PASSWORD}\""
