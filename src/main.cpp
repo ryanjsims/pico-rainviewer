@@ -54,6 +54,11 @@ weather_map_ext maps[16];
 PNG png_decoder;
 
 #define DEFAULT_PALETTE 4
+#define DEFAULT_SPEED 60
+#define MIN_SPEED 15
+#define MAX_SPEED 120
+#define PALETTE_PIN 15
+#define SPEED_PIN 14
 
 const uint32_t* palettes[] = {
     black_and_white_color_table,
@@ -293,7 +298,7 @@ struct refresh_data {
     const uint8_t *start;
     uint8_t display_index;
     uint32_t map_advance;
-    uint32_t map_increment;
+    uint32_t* map_increment;
 };
 
 void redraw_map(rgb_matrix<64, 64>*, MC_23LCV1024*, uint8_t, uint8_t);
@@ -307,12 +312,13 @@ bool refresh_display_timer(repeating_timer_t* rt) {
         data->map_advance = 0;
         data->display_index = (data->display_index + 1) % 16;
     }
-    data->map_advance += data->map_increment;
+    data->map_advance += *data->map_increment;
     trace1("Redrew map.\n");
     return true;
 }
 
 volatile uint8_t current_palette = DEFAULT_PALETTE;
+volatile uint32_t current_speed = DEFAULT_SPEED;
 absolute_time_t last_call = get_absolute_time();
 void change_palette_interrupt(uint pin, uint32_t event_mask) {
     // Wait at least 1/4 second between changes
@@ -321,7 +327,15 @@ void change_palette_interrupt(uint pin, uint32_t event_mask) {
         return;
     }
     last_call = now;
-    current_palette = (current_palette + 1) % (sizeof(palettes) / sizeof(uint32_t*));
+    if (pin == PALETTE_PIN) {
+        current_palette = (current_palette + 1) % (sizeof(palettes) / sizeof(uint32_t*));
+    } else if (pin == SPEED_PIN) {
+        if(current_speed <= MIN_SPEED) {
+            current_speed = MAX_SPEED;
+        } else {
+            current_speed = current_speed >> 1;
+        }
+    }
 }
 
 uint32_t forward_distance_mod_n(int32_t first, int32_t second, uint32_t n) {
@@ -370,9 +384,13 @@ int main() {
     setenv("TZ", TIMEZONE, 1);
     tzset();
 
-    gpio_set_dir(15, false);
-    gpio_set_pulls(15, true, false);
-    gpio_set_irq_enabled_with_callback(15, GPIO_IRQ_EDGE_FALL, true, change_palette_interrupt);
+    gpio_set_dir(PALETTE_PIN, false);
+    gpio_set_pulls(PALETTE_PIN, true, false);
+    gpio_set_irq_enabled_with_callback(PALETTE_PIN, GPIO_IRQ_EDGE_FALL, true, change_palette_interrupt);
+
+    gpio_set_dir(SPEED_PIN, false);
+    gpio_set_pulls(SPEED_PIN, true, false);
+    gpio_set_irq_enabled_with_callback(SPEED_PIN, GPIO_IRQ_EDGE_FALL, true, change_palette_interrupt);
 
     if(cyw43_arch_init_with_country(CYW43_COUNTRY_USA)) {
         printf("Wi-Fi init failed");
@@ -425,7 +443,7 @@ int main() {
     refresh_config.start = &start;
     refresh_config.display_index = 0;
     refresh_config.map_advance = 0;
-    refresh_config.map_increment = 60;
+    refresh_config.map_increment = (uint32_t*)&current_speed;
     repeating_timer_t timer_data;
 
     bool success = add_repeating_timer_us(-100000, refresh_display_timer, &refresh_config, &timer_data);
