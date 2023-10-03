@@ -96,3 +96,5 @@ MC_23LCV1024::mode MC_23LCV1024::get_mode() {
 
     return (MC_23LCV1024::mode)dst[1];
 }
+
+uint32_t MC_23LCV1024::m_baud = 0;
