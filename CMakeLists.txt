@@ -31,6 +31,7 @@ add_executable(pico_rainviewer
     src/rgb_matrix.cpp
     src/weather_map.cpp
     src/MC_23LCV1024.cpp
+    src/crc32.cpp
 )
 
 pico_generate_pio_header(pico_rainviewer ${CMAKE_CURRENT_LIST_DIR}/src/pio/hub75e.pio)
