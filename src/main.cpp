@@ -518,7 +518,7 @@ int main() {
             datetime_t datetime;
             rtc_get_datetime(&datetime);
             struct tm time = ntp_client::localtime(datetime);
-            uint32_t delay_seconds = 610 - (mktime(&time) % 600);
+            uint32_t delay_seconds = 660 - (mktime(&time) % 600);
             time.tm_sec += delay_seconds;
             add_alarm_in_ms(delay_seconds * 1000, update_maps_alarm, &update_maps, true);
             info("Will alarm in %d seconds\n", delay_seconds);
