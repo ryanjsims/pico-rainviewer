@@ -20,6 +20,7 @@ public:
 
     int32_t read(uint32_t addr, std::span<uint8_t> dst);
     int32_t write(uint32_t addr, std::span<uint8_t> src);
+    uint32_t validate(uint32_t addr, uint32_t size);
     void clear();
 
     void set_mode(mode new_mode);

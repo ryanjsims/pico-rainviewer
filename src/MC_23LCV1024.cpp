@@ -1,4 +1,5 @@
 #include "MC_23LCV1024.h"
+#include "crc32.h"
 
 #include <hardware/gpio.h>
 #include <hardware/spi.h>
@@ -37,9 +38,8 @@ MC_23LCV1024::MC_23LCV1024(uint32_t requested_baud) {
         gpio_put(SPI_CS, 1);
         // Make the CS pin available to picotool
         bi_decl(bi_1pin_with_name(SPI_CS, "SPI CS"));
-
-        info("Initialized spi baud rate at %d Hz\n", m_baud);
     }
+    cs_deselect();
 }
 
 int32_t MC_23LCV1024::read(uint32_t addr, std::span<uint8_t> dst) {
@@ -64,6 +64,23 @@ int32_t MC_23LCV1024::write(uint32_t addr, std::span<uint8_t> src) {
     int32_t bytes_written = spi_write_blocking(spi0, src.data(), src.size());
     cs_deselect();
     return bytes_written;
+}
+
+uint32_t MC_23LCV1024::validate(uint32_t addr, uint32_t size) {
+    if(addr >= SIZE) {
+        return 0;
+    }
+    uint8_t buf[4] = {READ_OP, (uint8_t)((addr >> 16) & 0xFF), (uint8_t)((addr >> 8) & 0xFF), (uint8_t)(addr & 0xFF)};
+    uint32_t sram_crc = 0xFFFFFFFF;
+    uint8_t octet;
+    cs_select();
+    spi_write_blocking(spi0, buf, 4);
+    for(uint32_t i = 0; i < size; i++) {
+        spi_read_blocking(spi0, 0x00, &octet, 1);
+        sram_crc = updateCRC32(octet, sram_crc);
+    }
+    cs_deselect();
+    return ~sram_crc;
 }
 
 void MC_23LCV1024::clear() {

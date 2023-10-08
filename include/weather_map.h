@@ -56,5 +56,5 @@ public:
 private:
     time_t m_timestamp;
     bool m_nowcast, m_init;
-    uint32_t m_address;
+    uint32_t m_address, m_crc32;
 };

@@ -1,4 +1,5 @@
 #include "weather_map.h"
+#include "crc32.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -39,8 +40,20 @@ weather_map_ext weather_map::save(uint32_t address) {
     to_return.m_timestamp = m_timestamp;
     to_return.m_nowcast = m_nowcast;
     to_return.m_address = address;
-    // spi write 4096 bytes from m_data to address
-    int32_t wrote = m_sram->write(address, {m_data, sizeof(m_data)});
+    to_return.m_crc32 = crc32buf((char*)m_data, sizeof(m_data));
+    uint32_t sram_crc = ~to_return.m_crc32;
+    int32_t wrote = 0;
+    for(uint8_t i = 3; i > 0 && sram_crc != to_return.m_crc32; i--) {
+        if(sram_crc != to_return.m_crc32 && wrote > 0) {
+            warn("Invalid CRC: actual 0x%08x != expected 0x%08x. (retries left: %d)\n", sram_crc, to_return.m_crc32, i);
+        }
+        // spi write 4096 bytes from m_data to address
+        wrote = m_sram->write(address, {m_data, sizeof(m_data)});
+        sram_crc = m_sram->validate(address, sizeof(m_data));
+    }
+    if(sram_crc != to_return.m_crc32) {
+        error("Invalid CRC: actual 0x%08x != expected 0x%08x, giving up\n", sram_crc, to_return.m_crc32);
+    }
     info("Wrote %d bytes to 0x%05x\n", wrote, address);
     to_return.m_init = true;
     return to_return;
