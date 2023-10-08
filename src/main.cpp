@@ -427,7 +427,10 @@ int main() {
         }
     }
 
-    MC_23LCV1024 spi_sram(15625000);
+    ntp_client ntp("pool.ntp.org");
+    // Repeat sync once per day at 10am UTC (3am AZ)
+    datetime_t repeat = {.year = -1, .month = -1, .day = -1, .dotw = -1, .hour = 10, .min = 0, .sec = 0};
+    ntp.sync_time(&repeat);
     weather_map scratch{&spi_sram};
     scratch.clear();
 
@@ -447,11 +450,6 @@ int main() {
     repeating_timer_t timer_data;
 
     bool success = add_repeating_timer_us(-100000, refresh_display_timer, &refresh_config, &timer_data);
-
-    ntp_client ntp("pool.ntp.org");
-    // Repeat sync once per day at 10am UTC (3am AZ)
-    datetime_t repeat = {.year = -1, .month = -1, .day = -1, .dotw = -1, .hour = 10, .min = 0, .sec = 0};
-    ntp.sync_time(&repeat);
 
     json rain_maps = json::array();
     uint64_t generated_timestamp = 0;
