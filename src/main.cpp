@@ -211,6 +211,7 @@ bool download_full_map(weather_map* scratch, http_client &client, std::string ta
     }
     return true;
 }
+
 uint8_t download_weather_maps(json& rain_maps, double lat, double lon, uint8_t z, weather_map* scratch, repeating_timer_t* timer) {
     uint8_t start = 0, count = rain_maps.size();
     uint32_t first_timestamp = rain_maps[0]["time"];
