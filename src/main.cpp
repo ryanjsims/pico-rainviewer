@@ -14,6 +14,7 @@
 #include "weather_map.h"
 #include "rgb_matrix.h"
 #include "MC_23LCV1024.h"
+#include "crc32.h"
 
 const char ISRG_ROOT_X1_CERT[] = "-----BEGIN CERTIFICATE-----\n\
 MIIFYDCCBEigAwIBAgIQQAF3ITfU6UK47naqPGQKtzANBgkqhkiG9w0BAQsFADA/\n\
@@ -52,7 +53,9 @@ using namespace nlohmann::detail;
 
 weather_map_ext maps[16];
 PNG png_decoder;
+MC_23LCV1024 spi_sram(15625000);
 
+#define CONFIG_ADDR 0x00010000
 #define DEFAULT_PALETTE 4
 #define DEFAULT_SPEED 60
 #define MIN_SPEED 15
@@ -317,9 +320,17 @@ bool refresh_display_timer(repeating_timer_t* rt) {
     return true;
 }
 
+struct config_t {
+    uint8_t speed;
+    uint8_t palette;
+    uint16_t padding;
+};
+
+config_t config;
 volatile uint8_t current_palette = DEFAULT_PALETTE;
 volatile uint32_t current_speed = DEFAULT_SPEED;
 absolute_time_t last_call = get_absolute_time();
+void save_config();
 void change_palette_interrupt(uint pin, uint32_t event_mask) {
     // Wait at least 1/4 second between changes
     absolute_time_t prev = last_call, now = get_absolute_time();
@@ -329,13 +340,16 @@ void change_palette_interrupt(uint pin, uint32_t event_mask) {
     last_call = now;
     if (pin == PALETTE_PIN) {
         current_palette = (current_palette + 1) % (sizeof(palettes) / sizeof(uint32_t*));
+        config.palette = current_palette;
     } else if (pin == SPEED_PIN) {
         if(current_speed <= MIN_SPEED) {
             current_speed = MAX_SPEED;
         } else {
             current_speed = current_speed >> 1;
         }
+        config.speed = current_speed;
     }
+    save_config();
 }
 
 uint32_t forward_distance_mod_n(int32_t first, int32_t second, uint32_t n) {
@@ -376,6 +390,30 @@ void redraw_map(rgb_matrix<64, 64>* matrix, MC_23LCV1024* sram, uint8_t start, u
         matrix->set_pixel(63, i + 24, (MAX(255 - 20 * (i + 1), 10)) & 0xFF | (MAX(10, 85 * (i + 1 - 13)) & 0xFF) << 16 | (i == distance ? 0x0000b700 : 0));
     }
     matrix->flip_buffer();
+}
+
+void load_config() {
+    uint32_t config_crc32, stored_crc32;
+    spi_sram.read(CONFIG_ADDR, {(uint8_t*)&config, sizeof(config_t)});
+    spi_sram.read(CONFIG_ADDR + sizeof(config_t), {(uint8_t*)&stored_crc32, sizeof(uint32_t)});
+    config_crc32 = spi_sram.validate(CONFIG_ADDR, sizeof(config_t));
+    if(stored_crc32 != config_crc32) {
+        info1("Loading default config\n");
+        config.speed = DEFAULT_SPEED;
+        config.palette = DEFAULT_PALETTE;
+        config.padding = 0xCCAA;
+    } else {
+        info("Loaded config:\n    speed %d\n    palette %d\n", config.speed, config.palette);
+    }
+    current_speed = config.speed;
+    current_palette = config.palette;
+}
+
+void save_config() {
+    uint32_t config_crc32 = crc32buf((char*)&config, sizeof(config_t));
+    spi_sram.write(CONFIG_ADDR, {(uint8_t*)&config, sizeof(config_t)});
+    spi_sram.write(CONFIG_ADDR + sizeof(config_t), {(uint8_t*)&config_crc32, sizeof(uint32_t)});
+    info("Saved config:\n    speed %d\n    palette %d\n    crc 0x%08x\n", config.speed, config.palette, config_crc32);
 }
 
 int main() {
@@ -431,8 +469,11 @@ int main() {
     // Repeat sync once per day at 10am UTC (3am AZ)
     datetime_t repeat = {.year = -1, .month = -1, .day = -1, .dotw = -1, .hour = 10, .min = 0, .sec = 0};
     ntp.sync_time(&repeat);
+
+    load_config();
     weather_map scratch{&spi_sram};
     scratch.clear();
+    save_config();
 
     rgb_matrix<64, 64> *matrix = new rgb_matrix<64, 64>();
     matrix->clear();
