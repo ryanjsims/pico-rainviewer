@@ -65,3 +65,27 @@ target_link_options(pico_rainviewer PRIVATE "-Wl,--print-memory-usage")
 pico_enable_stdio_usb(pico_rainviewer 1)
 pico_enable_stdio_uart(pico_rainviewer 0)
 pico_add_extra_outputs(pico_rainviewer)
+
+add_executable(pico_sram_test
+    src/test_sram.cpp
+    src/MC_23LCV1024.cpp
+    src/crc32.cpp
+)
+
+target_include_directories(pico_sram_test PUBLIC include)
+target_link_libraries(pico_sram_test PRIVATE
+    pico_stdlib
+    pico_web_client
+    hardware_spi
+)
+
+target_compile_options(pico_sram_test PRIVATE "-Wno-psabi")
+target_link_options(pico_sram_test PRIVATE "-Wl,--print-memory-usage")
+
+target_compile_definitions(pico_sram_test PRIVATE
+    "LOG_LEVEL=$ENV{LOG_LEVEL}"
+)
+
+pico_enable_stdio_usb(pico_sram_test 1)
+pico_enable_stdio_uart(pico_sram_test 0)
+pico_add_extra_outputs(pico_sram_test)
