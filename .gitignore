@@ -2,3 +2,5 @@ build
 .vscode
 .env
 *.stl
+*.png
+*.pdn
