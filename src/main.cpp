@@ -139,7 +139,7 @@ bool parse_weather_maps(json *array, uint64_t* generated, repeating_timer_t* tim
     cancel_repeating_timer(timer);
     client.get("/public/weather-maps.json");
     uint32_t i = 3000;
-    while(i > 0 && !responded) {
+    while(i > 0 && !responded && !client.has_error()) {
         sleep_ms(10);
         i--;
     }
@@ -182,12 +182,16 @@ bool download_full_map(weather_map* scratch, http_client &client, std::string ta
     client.header("Connection", final ? "close" : "keep-alive");
     client.get(target);
     uint32_t timeout = 3000;
-    while(timeout > 0 && !client.has_response()) {
+    while(timeout > 0 && !client.has_response() && !client.has_error()) {
         sleep_ms(10);
         timeout--;
     }
     if(timeout == 0) {
         error1("Timed out!\n");
+        return false;
+    }
+    else if(client.has_error()) {
+        error1("Failed to download map!\n");
         return false;
     }
     const http_response& response = client.response();
