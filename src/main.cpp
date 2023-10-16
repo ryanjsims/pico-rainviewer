@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <charconv>
 #include <pico/cyw43_arch.h>
 #include <pico/multicore.h>
 #include <pico/stdlib.h>
@@ -15,6 +16,8 @@
 #include "rgb_matrix.h"
 #include "MC_23LCV1024.h"
 #include "crc32.h"
+
+#pragma message("Building rainviewer for SSID " WIFI_SSID)
 
 const char ISRG_ROOT_X1_CERT[] = "-----BEGIN CERTIFICATE-----\n\
 MIIFYDCCBEigAwIBAgIQQAF3ITfU6UK47naqPGQKtzANBgkqhkiG9w0BAQsFADA/\n\
@@ -121,7 +124,7 @@ bool parse_weather_maps(json *array, uint64_t* generated, repeating_timer_t* tim
 
     client.on_response([&client, array, &responded, generated]() {
         const http_response& response = client.response();
-        info("Got response: %d %s\n", response.status(), response.get_status_text().c_str());
+        info("Got response: %d %s\n", response.status(), std::string(response.get_status_text()).c_str());
         if(response.status() == 200) {
             json data = json::parse(response.get_body());
             *generated = data["generated"];
@@ -243,12 +246,12 @@ uint8_t download_weather_maps(json& rain_maps, double lat, double lon, uint8_t z
 
     client.on_response([&client]() {
         const http_response& response = client.response();
-        info("Got response: %d %s\n", response.status(), response.get_status_text().c_str());
+        info("Got response: %d %s\n", response.status(), std::string(response.get_status_text()).c_str());
         auto& headers = response.get_headers();
         if(response.status() == 200) {
-            info("Received %s of size %s\n", headers.at("Content-Type").c_str(), headers.at("Content-Length").c_str());
+            info("Received %s of size %s\n", std::string(headers.at("Content-Type")).c_str(), std::string(headers.at("Content-Length")).c_str());
         } else if(response.status() == 206) {
-            info("Receiving %s of range %s\n", headers.at("Content-Type").c_str(), headers.at("Content-Range").c_str());
+            info("Receiving %s of range %s\n", std::string(headers.at("Content-Type")).c_str(), std::string(headers.at("Content-Range")).c_str());
         }
     });
 
@@ -275,7 +278,9 @@ uint8_t download_weather_maps(json& rain_maps, double lat, double lon, uint8_t z
             continue;
         }
         const http_response& response = client.response();
-        int length = std::stoi(response.get_headers().at("Content-Length"));
+        int length;
+        std::string_view content_length = response.get_headers().at("Content-Length");
+        std::from_chars(content_length.begin(), content_length.end(), length);
         scratch->load(maps[to_download[i]["idx"].get<uint32_t>()], false);
         if(length < TCP_WND) {
             download_full_map(scratch, client, target, i == to_download.size() - 1, to_download[i]["idx"].get<uint32_t>());
