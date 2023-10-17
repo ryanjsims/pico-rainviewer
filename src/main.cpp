@@ -148,10 +148,13 @@ bool parse_weather_maps(json *array, uint64_t* generated, repeating_timer_t* tim
     }
     add_repeating_timer_us(timer->delay_us, timer->callback, timer->user_data, timer);
     // Wait for the connection to close
+    debug1("parse_weather_maps: Waiting for client to disconnect...\n");
     while(client.connected()) {
         sleep_ms(10);
     }
+    debug1("parse_weather_maps: Client disconnected.\n");
     uint16_t status = client.response().status();
+    debug("parse_weather_maps: Client status %d\n", status);
     return status >= 200 && status < 300;
 }
 
@@ -293,9 +296,11 @@ uint8_t download_weather_maps(json& rain_maps, double lat, double lon, uint8_t z
         add_repeating_timer_us(timer->delay_us, timer->callback, timer->user_data, timer);
     }
     // Wait for the connection to close
+    debug1("download_weather_maps: Waiting for client to disconnect...\n");
     while(client.connected()) {
         sleep_ms(10);
     }
+    debug1("download_weather_maps: Client disconnected.\n");
     return start;
 }
 
