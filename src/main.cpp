@@ -57,6 +57,7 @@ using namespace nlohmann::detail;
 weather_map_ext maps[16];
 PNG png_decoder;
 MC_23LCV1024 spi_sram(15625000);
+http_client* client;
 
 #define CONFIG_ADDR 0x00010000
 #define DEFAULT_PALETTE 4
@@ -116,15 +117,19 @@ void netif_status_callback(netif* netif) {
     }
 }
 
+// TODO: Add last modified header check - if last modified hasn't changed, delay the update for a minute
+
 bool parse_weather_maps(json *array, uint64_t* generated, repeating_timer_t* timer) {
     assert(array->type() == value_t::array);
     assert(generated != nullptr);
-    http_client client("https://api.rainviewer.com", {(uint8_t*)ISRG_ROOT_X1_CERT, sizeof(ISRG_ROOT_X1_CERT)});
+    //http_client client("https://api.rainviewer.com", {(uint8_t*)ISRG_ROOT_X1_CERT, sizeof(ISRG_ROOT_X1_CERT)});
+    client->clear_error();
+    client->url("https://api.rainviewer.com");
     bool responded = false;
 
-    client.on_response([&client, array, &responded, generated]() {
-        const http_response& response = client.response();
-        info("Got response: %d %s\n", response.status(), std::string(response.get_status_text()).c_str());
+    client->on_response([array, &responded, generated]() {
+        const http_response& response = client->response();
+        info("Got response: %d %*s\n", response.status(), response.get_status_text().size(), response.get_status_text().data());
         if(response.status() == 200) {
             json data = json::parse(response.get_body());
             *generated = data["generated"];
@@ -138,22 +143,22 @@ bool parse_weather_maps(json *array, uint64_t* generated, repeating_timer_t* tim
         responded = true;
     });
 
-    client.header("Connection", "close");
+    client->header("Connection", "close");
     cancel_repeating_timer(timer);
-    client.get("/public/weather-maps.json");
+    client->get("/public/weather-maps.json");
     uint32_t i = 3000;
-    while(i > 0 && !responded && !client.has_error()) {
+    while(i > 0 && !responded && !client->has_error()) {
         sleep_ms(10);
         i--;
     }
     add_repeating_timer_us(timer->delay_us, timer->callback, timer->user_data, timer);
     // Wait for the connection to close
     debug1("parse_weather_maps: Waiting for client to disconnect...\n");
-    while(client.connected()) {
+    while(client->connected()) {
         sleep_ms(10);
     }
     debug1("parse_weather_maps: Client disconnected.\n");
-    uint16_t status = client.response().status();
+    uint16_t status = client->response().status();
     debug("parse_weather_maps: Client status %d\n", status);
     return status >= 200 && status < 300;
 }
@@ -184,11 +189,11 @@ void png_draw_callback(PNGDRAW *draw) {
     }
 }
 
-bool download_full_map(weather_map* scratch, http_client &client, std::string target, bool final, uint32_t map_index) {
-    client.header("Connection", final ? "close" : "keep-alive");
-    client.get(target);
+bool download_full_map(weather_map* scratch, std::string target, bool final, uint32_t map_index) {
+    client->header("Connection", final ? "close" : "keep-alive");
+    client->get(target);
     uint32_t timeout = 3000;
-    while(timeout > 0 && !client.has_response() && !client.has_error()) {
+    while(timeout > 0 && !client->has_response() && !client->has_error()) {
         sleep_ms(10);
         timeout--;
     }
@@ -196,11 +201,11 @@ bool download_full_map(weather_map* scratch, http_client &client, std::string ta
         error1("Timed out!\n");
         return false;
     }
-    else if(client.has_error()) {
+    else if(client->has_error()) {
         error1("Failed to download map!\n");
         return false;
     }
-    const http_response& response = client.response();
+    const http_response& response = client->response();
     if(response.get_body().size() > 0) {
         int rc = png_decoder.openRAM((uint8_t*)response.get_body().data(), response.get_body().size(), png_draw_callback);
         if(rc != PNG_SUCCESS) {
@@ -245,16 +250,21 @@ uint8_t download_weather_maps(json& rain_maps, double lat, double lon, uint8_t z
         }
     }
     info("Downloading %d maps...\n%s\n", to_download.size(), to_download.dump(4).c_str());
-    http_client client("https://tilecache.rainviewer.com", {(uint8_t*)ISRG_ROOT_X1_CERT, sizeof(ISRG_ROOT_X1_CERT)});
+    //http_client client("https://tilecache.rainviewer.com", {(uint8_t*)ISRG_ROOT_X1_CERT, sizeof(ISRG_ROOT_X1_CERT)});
+    client->clear_error();
+    client->url("https://tilecache.rainviewer.com");
 
-    client.on_response([&client]() {
-        const http_response& response = client.response();
-        info("Got response: %d %s\n", response.status(), std::string(response.get_status_text()).c_str());
+    client->on_response([]() {
+        const http_response& response = client->response();
+        info("Got response: %d %*s\n", response.status(), response.get_status_text().size(), response.get_status_text().data());
         auto& headers = response.get_headers();
+        const std::string_view content_type = headers.at("Content-Type");
+        const std::string_view content_length = headers.at("Content-Length");
         if(response.status() == 200) {
-            info("Received %s of size %s\n", std::string(headers.at("Content-Type")).c_str(), std::string(headers.at("Content-Length")).c_str());
+            info("Received %*s of size %*s\n", content_type.size(), content_type.data(), content_length.size(), content_length.data());
         } else if(response.status() == 206) {
-            info("Receiving %s of range %s\n", std::string(headers.at("Content-Type")).c_str(), std::string(headers.at("Content-Range")).c_str());
+            const std::string_view content_range = headers.at("Content-Range");
+            info("Receiving %*s of range %*s\n", content_type.size(), content_type.data(), content_range.size(), content_range.data());
         }
     });
 
@@ -269,9 +279,9 @@ uint8_t download_weather_maps(json& rain_maps, double lat, double lon, uint8_t z
         std::string target = to_download[i]["path"].get<std::string>() + buf;
         info("Requesting %s\n", target.c_str());
         cancel_repeating_timer(timer);
-        client.head(target);
+        client->head(target);
         uint32_t timeout = 3000;
-        while(timeout > 0 && !client.has_response()) {
+        while(timeout > 0 && !client->has_response()) {
             sleep_ms(10);
             timeout--;
         }
@@ -280,13 +290,13 @@ uint8_t download_weather_maps(json& rain_maps, double lat, double lon, uint8_t z
             retry = i;
             continue;
         }
-        const http_response& response = client.response();
+        const http_response& response = client->response();
         int length;
         std::string_view content_length = response.get_headers().at("Content-Length");
         std::from_chars(content_length.begin(), content_length.end(), length);
         scratch->load(maps[to_download[i]["idx"].get<uint32_t>()], false);
         if(length < TCP_WND) {
-            download_full_map(scratch, client, target, i == to_download.size() - 1, to_download[i]["idx"].get<uint32_t>());
+            download_full_map(scratch, target, i == to_download.size() - 1, to_download[i]["idx"].get<uint32_t>());
         } else if(response.get_headers().at("Accept-Ranges") == "bytes") {
             // download_chunked_map(scratch, client, target, i == to_download.size() - 1, to_download[i]["idx"].get<uint32_t>(), length);
             info1("Would try partial download here.\n");
@@ -297,7 +307,7 @@ uint8_t download_weather_maps(json& rain_maps, double lat, double lon, uint8_t z
     }
     // Wait for the connection to close
     debug1("download_weather_maps: Waiting for client to disconnect...\n");
-    while(client.connected()) {
+    while(client->connected()) {
         sleep_ms(10);
     }
     debug1("download_weather_maps: Client disconnected.\n");
@@ -493,6 +503,9 @@ int main() {
     rgb_matrix<64, 64> *matrix = new rgb_matrix<64, 64>();
     matrix->clear();
     matrix->start();
+
+    http_client http("https://api.rainviewer.com", {(uint8_t*)ISRG_ROOT_X1_CERT, sizeof(ISRG_ROOT_X1_CERT)});
+    client = &http;
 
     bool update_maps = true;
     uint8_t start = 0;
