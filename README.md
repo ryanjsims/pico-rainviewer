@@ -43,7 +43,7 @@ Alternatively you can build with VSCode using the CMake Tools extension. You sti
 // .vscode/settings.json
 {
     "cmake.environment": {
-        "BOARD": "pico_w",
+        "PICO_BOARD": "pico_w",
         "WIFI_SSID": "<your ssid>",
         "WIFI_PASSWORD": "<your password>",
         "LAT": 38.8951, // Washington DC, set to your desired display location
