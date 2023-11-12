@@ -49,7 +49,34 @@ MA0GCSqGSIb3DQEBCwUAA4IBAQAKcwBslm7/DlLQrt2M51oGrS+o44+/yQoDFVDC\n\
 WCLKTVXkcGdtwlfFRjlBz4pYg1htmf5X6DYO8A4jqv2Il9DjXA6USbW1FzXSLr9O\n\
 he8Y4IWS6wY7bCkjCWDcRQJMEhg76fsO3txE+FiYruq9RUWhiF1myv4Q6W+CyBFC\n\
 Dfvp7OOGAN6dEOM4+qR9sdjoSYKEBpsr6GtPAQw4dy753ec5\n\
------END CERTIFICATE-----\n";
+-----END CERTIFICATE-----\n\
+-----BEGIN CERTIFICATE-----\n\
+MIIEfjCCAuagAwIBAgIRAMlWXu0gsAES7UysKtLsddowDQYJKoZIhvcNAQELBQAw\n\
+VzEeMBwGA1UEChMVbWtjZXJ0IGRldmVsb3BtZW50IENBMRYwFAYDVQQLDA1yb290\n\
+QGZsdW9yaW5lMR0wGwYDVQQDDBRta2NlcnQgcm9vdEBmbHVvcmluZTAeFw0yMzEx\n\
+MDgwNzI2MzRaFw0zMzExMDgwNzI2MzRaMFcxHjAcBgNVBAoTFW1rY2VydCBkZXZl\n\
+bG9wbWVudCBDQTEWMBQGA1UECwwNcm9vdEBmbHVvcmluZTEdMBsGA1UEAwwUbWtj\n\
+ZXJ0IHJvb3RAZmx1b3JpbmUwggGiMA0GCSqGSIb3DQEBAQUAA4IBjwAwggGKAoIB\n\
+gQDLNe4Nt98fjefLmKMBjRwn6rIRWlYaT8tAfvJBawb3Y4ZeyfqhOnJ/Pg74Yifa\n\
+LKisGZ95YVseC5kNhxChGDFYgTkt0q2sugbuRkTNe1dLr1UQ6i3E6nKQ/T928UPX\n\
+S64BqXQXkyji3R/VbRoNdyDvmyxZD2uLIXuo4tv0kK1cHwvoZ+lgBPrfSiuYPa3A\n\
+43FBeK9DWrVM31+XyCognz8TUUd0PQPUTuk1xOgDEijQrypPHM33jeZyRv0yPYT3\n\
+T1OODx0IQXbeyfRkHmfKsJxtyddRb33U2lW3m7yGBqKQE8rhr/gAA+ymzPMhk58a\n\
+MPBtmSNgWAHr16J829Qx4lBtga6NfFVcV3j8OygQxYJNSmGic2FpsEtPfrO/jgWa\n\
+hrxIMjGpeKzc8DVMyxTt5wqapNLuDSh18NeiLrQwW60NCc2MPkdn7f/2/sCwb7IU\n\
+iM/eSgDo8sB402l+F6l0zNizvNEaVFggU5uJbnRU944PIp1d6CVkhaA7Nv7wHMMM\n\
+yCcCAwEAAaNFMEMwDgYDVR0PAQH/BAQDAgIEMBIGA1UdEwEB/wQIMAYBAf8CAQAw\n\
+HQYDVR0OBBYEFLCfJAY0MzytgmfMO3sUfibKqS1PMA0GCSqGSIb3DQEBCwUAA4IB\n\
+gQCOxrDpm5Lytj7n93bN3yart0IDh6hBQTJoal6nQT3LjKjCBcuuxSAhZJ6HRpZ5\n\
+Xx12cGlYsXdV98kTPDGmuB9SCuNEJGENPz7Fkzgkfcz7F5vS1ccth4aY6d2lJwp7\n\
+IkYgHQx4rx+UsG9SeS7xohr78qinuwKEapLDYhiq5/dD0iBAuuLo0v0s5eWw3Bj1\n\
+rbWqsHQd+jjComDX4npGcZ0ngu4jt3caqFUxhh5XGrcFd26QV9wQ/XBSdhWFuh/I\n\
+jGOy6cmgvUFNpTMIJ7PpAZACK4vuEJ+S5PVf011LazkyUhPzvZasOkMx49cbhNnC\n\
+kSIqm5U/YuMsWNVrC1HbOZPwJR3YNmLFNlcI84JfMjhRG8Z3Sc9B9UgdnCNkBeJC\n\
+sFgJh/Yqc4JSzABFvXTjXQKlvN0NK6H+nCVDJwbIxjOg6254ZIFraWjrzvnRy+/H\n\
+fWKHcbjCMI/QjOTtoNj36eD195qBhD1uDS7Tqvl72dxI0Pj4nqnk7j0QJmcViLOT\n\
+zAs=\n\
+-----END CERTIFICATE-----";
 
 using namespace nlohmann;
 using namespace nlohmann::detail;
@@ -160,6 +187,45 @@ bool parse_weather_maps(json *array, uint64_t* generated, repeating_timer_t* tim
     debug1("parse_weather_maps: Client disconnected.\n");
     uint16_t status = client->response().status();
     debug("parse_weather_maps: Client status %d\n", status);
+    return status >= 200 && status < 300;
+}
+
+bool update_temperature(float* temperature, repeating_timer_t* timer) {
+    //http_client client("https://api.rainviewer.com", {(uint8_t*)ISRG_ROOT_X1_CERT, sizeof(ISRG_ROOT_X1_CERT)});
+    if(temperature == nullptr) {
+        return false;
+    }
+    client->clear_error();
+    client->url("https://weewx.fluorine.local");
+    bool responded = false;
+
+    client->on_response([temperature, &responded]() {
+        const http_response& response = client->response();
+        info("Got response: %d '%.*s'\n", response.status(), response.get_status_text().size(), response.get_status_text().data());
+        if(response.status() == 200) {
+            json data = json::parse(response.get_body());
+            *temperature = data["outdoors"]["fahrenheit"];
+        }
+        responded = true;
+    });
+
+    client->header("Connection", "close");
+    cancel_repeating_timer(timer);
+    client->get("/api/temperature");
+    uint32_t i = 3000;
+    while(i > 0 && !responded && !client->has_error()) {
+        sleep_ms(10);
+        i--;
+    }
+    add_repeating_timer_us(timer->delay_us, timer->callback, timer->user_data, timer);
+    // Wait for the connection to close
+    debug1("update_temperature: Waiting for client to disconnect...\n");
+    while(client->connected()) {
+        sleep_ms(10);
+    }
+    debug1("update_temperature: Client disconnected.\n");
+    uint16_t status = client->response().status();
+    debug("update_temperature: Client status %d\n", status);
     return status >= 200 && status < 300;
 }
 
@@ -320,6 +386,12 @@ int64_t update_maps_alarm(alarm_id_t alarm, void* user_data) {
     return 0;
 }
 
+int64_t update_temperature_alarm(alarm_id_t alarm, void* user_data) {
+    bool* update_temp = (bool*)user_data;
+    *update_temp = true;
+    return 0;
+}
+
 struct refresh_data {
     rgb_matrix<64, 64>* matrix;
     MC_23LCV1024* sram;
@@ -327,14 +399,15 @@ struct refresh_data {
     uint8_t display_index;
     uint32_t map_advance;
     uint32_t* map_increment;
+    float temperature;
 };
 
-void redraw_map(rgb_matrix<64, 64>*, MC_23LCV1024*, uint8_t, uint8_t);
+void redraw_map(rgb_matrix<64, 64>*, MC_23LCV1024*, uint8_t, uint8_t, float);
 
 bool refresh_display_timer(repeating_timer_t* rt) {
     refresh_data* data = (refresh_data*)rt->user_data;
     trace("Redrawing map...\n    map_advance = %d\n    display_index = %d\n", data->map_advance, data->display_index);
-    redraw_map(data->matrix, data->sram, *data->start, data->display_index);
+    redraw_map(data->matrix, data->sram, *data->start, data->display_index, data->temperature);
 
     if(data->map_advance >= 600) {
         data->map_advance = 0;
@@ -382,7 +455,7 @@ uint32_t forward_distance_mod_n(int32_t first, int32_t second, uint32_t n) {
     return distance >= 0 ? distance : n + distance;
 }
 
-void redraw_map(rgb_matrix<64, 64>* matrix, MC_23LCV1024* sram, uint8_t start, uint8_t display_index) {
+void redraw_map(rgb_matrix<64, 64>* matrix, MC_23LCV1024* sram, uint8_t start, uint8_t display_index, float temperature) {
     uint32_t index = display_index * 4096;
     uint8_t pixel = 0;
     for(int row = 0; row < 64; row++) {
@@ -398,14 +471,17 @@ void redraw_map(rgb_matrix<64, 64>* matrix, MC_23LCV1024* sram, uint8_t start, u
     char date_str[8];
     char time_str[8];
     char map_time_str[8];
+    char temperature_str[8];
     size_t date_len = std::strftime(date_str, 8, "%m-%d", &time);
     size_t time_len = std::strftime(time_str, 8, "%R", &time);
     struct tm map_time = ntp_client::localtime(maps[display_index].timestamp());
     size_t map_time_len = std::strftime(map_time_str, 8, "%R", &map_time);
+    sprintf(temperature_str, "% 3.1f\xb0""F", temperature);
 
     matrix->draw_str(11, 2, 0xFFFFFFFF, {date_str, date_len});
     matrix->draw_str(17, 2, 0xFFFFFFFF, {time_str, time_len});
     matrix->draw_str(23, 2, 0xFFFFFFFF, {map_time_str, map_time_len});
+    matrix->draw_str(11, 35, 0xFFFFFFFF, {temperature_str, 7});
     for(int i = 1; i <= 8; i++) {
         matrix->set_pixel(62, i - 1, palettes[current_palette][16 * i - 1]);
         matrix->set_pixel(63, i - 1, palettes[current_palette][(16 * i - 1) | 0x80]);
@@ -446,6 +522,7 @@ int main() {
     rtc_init();
     setenv("TZ", TIMEZONE, 1);
     tzset();
+    dns_init();
 
     gpio_set_dir(PALETTE_PIN, false);
     gpio_set_pulls(PALETTE_PIN, true, false);
@@ -507,7 +584,13 @@ int main() {
     http_client http("https://api.rainviewer.com", {(uint8_t*)ISRG_ROOT_X1_CERT, sizeof(ISRG_ROOT_X1_CERT)});
     client = &http;
 
-    bool update_maps = true;
+    ip_addr_t address;
+    IP4_ADDR(&address, 192, 168, 0, 6);
+    info1("Setting local dns host...");
+    err_t rc = dns_local_addhost("weewx.fluorine.local", &address);
+    info_cont(" rc = %d\n", rc);
+
+    bool update_maps = true, update_temp = true;
     uint8_t start = 0;
     refresh_data refresh_config;
     refresh_config.matrix = matrix;
@@ -516,6 +599,7 @@ int main() {
     refresh_config.display_index = 0;
     refresh_config.map_advance = 0;
     refresh_config.map_increment = (uint32_t*)&current_speed;
+    refresh_config.temperature = 0.0f;
     repeating_timer_t timer_data;
 
     bool success = add_repeating_timer_us(-100000, refresh_display_timer, &refresh_config, &timer_data);
@@ -559,6 +643,13 @@ int main() {
             std::strftime(buf, 128, "%F %T UTC%z", localtime_r(&converted, &time));
 
             info("Updated maps, sleeping until %s\n", buf);
+        }
+        if(update_temp && ntp.state() == ntp_state::SYNCED) {
+            info1("Updating temperature\n");
+            update_temperature(&refresh_config.temperature, &timer_data);
+            update_temp = false;
+            // Update every 5 minutes
+            add_alarm_in_ms(300000, update_temperature_alarm, &update_temp, true);
         }
     }
 
