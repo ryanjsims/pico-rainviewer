@@ -156,7 +156,7 @@ bool parse_weather_maps(json *array, uint64_t* generated, repeating_timer_t* tim
 
     client->on_response([array, &responded, generated]() {
         const http_response& response = client->response();
-        info("Got response: %d %*s\n", response.status(), response.get_status_text().size(), response.get_status_text().data());
+        info("Got response: %d %.*s\n", response.status(), response.get_status_text().size(), response.get_status_text().data());
         if(response.status() == 200) {
             json data = json::parse(response.get_body());
             *generated = data["generated"];
@@ -322,15 +322,15 @@ uint8_t download_weather_maps(json& rain_maps, double lat, double lon, uint8_t z
 
     client->on_response([]() {
         const http_response& response = client->response();
-        info("Got response: %d %*s\n", response.status(), response.get_status_text().size(), response.get_status_text().data());
+        info("Got response: %d %.*s\n", response.status(), response.get_status_text().size(), response.get_status_text().data());
         auto& headers = response.get_headers();
         const std::string_view content_type = headers.at("Content-Type");
         const std::string_view content_length = headers.at("Content-Length");
         if(response.status() == 200) {
-            info("Received %*s of size %*s\n", content_type.size(), content_type.data(), content_length.size(), content_length.data());
+            info("Received %.*s of size %.*s\n", content_type.size(), content_type.data(), content_length.size(), content_length.data());
         } else if(response.status() == 206) {
             const std::string_view content_range = headers.at("Content-Range");
-            info("Receiving %*s of range %*s\n", content_type.size(), content_type.data(), content_range.size(), content_range.data());
+            info("Receiving %.*s of range %.*s\n", content_type.size(), content_type.data(), content_range.size(), content_range.data());
         }
     });
 
@@ -533,7 +533,7 @@ int main() {
     gpio_set_irq_enabled_with_callback(SPEED_PIN, GPIO_IRQ_EDGE_FALL, true, change_palette_interrupt);
 
     if(cyw43_arch_init_with_country(CYW43_COUNTRY_USA)) {
-        printf("Wi-Fi init failed");
+        error1("Wi-Fi init failed\n");
         return -1;
     }
     cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, 1);
