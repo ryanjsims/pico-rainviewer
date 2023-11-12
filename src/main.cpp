@@ -11,6 +11,8 @@
 #include "logger.h"
 #include <PNGdec.h>
 
+#include <lwip/dns.h>
+
 #include "color_tables.h"
 #include "weather_map.h"
 #include "rgb_matrix.h"
