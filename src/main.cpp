@@ -6,6 +6,7 @@
 #include <pico/util/datetime.h>
 #include <hardware/rtc.h>
 #include <http_client.h>
+#include <mqtt_client.h>
 #include <ntp_client.h>
 #include <nlohmann/json.hpp>
 #include "logger.h"
@@ -83,10 +84,18 @@ zAs=\n\
 using namespace nlohmann;
 using namespace nlohmann::detail;
 
+const std::u8string speed_topic = u8"living_room/rainviewer/display/speed";
+const std::u8string palette_topic = u8"living_room/rainviewer/display/palette";
+const std::u8string display_topic = u8"living_room/rainviewer/display/switch";
+const std::u8string temperature_topic = u8"living_room/rainviewer/temperature";
+const std::u8string mqtt_username = u8"pico";
+const std::u8string mqtt_password = u8"I~i=/*\\{c.vz2VA/G[cC<s<J3";
+
 weather_map_ext maps[16];
 PNG png_decoder;
 MC_23LCV1024 spi_sram(15625000);
 http_client* client;
+mqtt::client* mqtt_ptr = nullptr;
 
 #define CONFIG_ADDR 0x00010000
 #define DEFAULT_PALETTE 4
@@ -95,6 +104,12 @@ http_client* client;
 #define MAX_SPEED 120
 #define PALETTE_PIN 15
 #define SPEED_PIN 14
+
+struct config_t {
+    uint8_t speed;
+    uint8_t palette;
+    uint16_t padding;
+};
 
 const uint32_t* palettes[] = {
     black_and_white_color_table,
@@ -107,20 +122,6 @@ const uint32_t* palettes[] = {
     rainbow_at_selex_si_color_table,
     dark_sky_color_table
 };
-
-void dump_bytes(const uint8_t *bptr, uint32_t len) {
-    unsigned int i = 0;
-    info("dump_bytes %d", len);
-    for (i = 0; i < len;) {
-        if ((i & 0x0f) == 0) {
-            info_cont1("\n");
-        } else if ((i & 0x07) == 0) {
-            info_cont1(" ");
-        }
-        info_cont("%02x ", bptr[i++]);
-    }
-    info_cont1("\n");
-}
 
 void netif_status_callback(netif* netif) {
     info1("netif status change:\n");
@@ -176,10 +177,12 @@ bool parse_weather_maps(json *array, uint64_t* generated, repeating_timer_t* tim
     cancel_repeating_timer(timer);
     client->get("/public/weather-maps.json");
     uint32_t i = 3000;
+    debug1("parse_weather_maps: Waiting for client to get response...\n");
     while(i > 0 && !responded && !client->has_error()) {
         sleep_ms(10);
         i--;
     }
+    debug("parse_weather_maps:\n    i = %d\n    responded = %d\n    client->has_error = %d\n", i, responded, client->has_error());
     add_repeating_timer_us(timer->delay_us, timer->callback, timer->user_data, timer);
     // Wait for the connection to close
     debug1("parse_weather_maps: Waiting for client to disconnect...\n");
@@ -193,7 +196,6 @@ bool parse_weather_maps(json *array, uint64_t* generated, repeating_timer_t* tim
 }
 
 bool update_temperature(float* temperature, repeating_timer_t* timer) {
-    //http_client client("https://api.rainviewer.com", {(uint8_t*)ISRG_ROOT_X1_CERT, sizeof(ISRG_ROOT_X1_CERT)});
     if(temperature == nullptr) {
         return false;
     }
@@ -233,7 +235,6 @@ bool update_temperature(float* temperature, repeating_timer_t* timer) {
 
 uint8_t lines[4][256];
 void write_line(int row, weather_map* scratch) {
-    debug("Writing line %d to scratch weather map\n", row);
     for(int col = 0; col < 64; col++) {
         uint16_t sum = 0;
         for(int i = 0; i < 4; i++) {
@@ -257,6 +258,25 @@ void png_draw_callback(PNGDRAW *draw) {
     }
 }
 
+bool decode_png(int rc, weather_map* scratch, uint32_t map_index) {
+    if(rc != PNG_SUCCESS) {
+        error("While opening PNG: code %d\n", rc);
+        return false;
+    }
+    info("PNG opened.\n    Width:  %d\n    Height: %d\n    Pixel type: %d\n", png_decoder.getWidth(), png_decoder.getHeight(), png_decoder.getPixelType());
+    rc = png_decoder.decode(scratch, 0);
+    if(rc != PNG_SUCCESS) {
+        error("While decoding PNG: code %d\n", rc);
+        return false;
+    }
+    // Write final line since there isn't a 256th line to trigger it
+    write_line(63, scratch);
+    info1("Decoded PNG successfully. Saving to SRAM...\n");
+    maps[map_index] = scratch->save(map_index * 4096);
+    info1("Saved.\n");
+    return true;
+}
+
 bool download_full_map(weather_map* scratch, std::string target, bool final, uint32_t map_index) {
     client->header("Connection", final ? "close" : "keep-alive");
     client->get(target);
@@ -276,23 +296,94 @@ bool download_full_map(weather_map* scratch, std::string target, bool final, uin
     const http_response& response = client->response();
     if(response.get_body().size() > 0) {
         int rc = png_decoder.openRAM((uint8_t*)response.get_body().data(), response.get_body().size(), png_draw_callback);
-        if(rc != PNG_SUCCESS) {
-            error("While opening PNG: code %d\n", rc);
-            return false;
-        }
-        info("PNG opened.\n    Width:  %d\n    Height: %d\n    Pixel type: %d\n", png_decoder.getWidth(), png_decoder.getHeight(), png_decoder.getPixelType());
-        rc = png_decoder.decode(scratch, 0);
-        if(rc != PNG_SUCCESS) {
-            error("While decoding PNG: code %d\n", rc);
-            return false;
-        }
-        // Write final line since there isn't a 256th line to trigger it
-        write_line(63, scratch);
-        info1("Decoded PNG successfully. Saving to SRAM...\n");
-        maps[map_index] = scratch->save(map_index * 4096);
-        info1("Saved.\n");
+        return decode_png(rc, scratch, map_index);
     }
-    return true;
+    return false;
+}
+
+struct spi_file {
+    uint32_t base, pos, length;
+};
+
+
+void *open_spi(const char* filename, int32_t* length) {
+    spi_sram.read(CONFIG_ADDR + sizeof(config_t) + sizeof(int32_t), {(uint8_t*)length, sizeof(int32_t)});
+    spi_file* handle = (spi_file*)malloc(sizeof(spi_file));
+    if(handle == nullptr) {
+        return nullptr;
+    }
+    handle->base = CONFIG_ADDR + sizeof(config_t) + sizeof(int32_t) * 2;
+    handle->pos = 0;
+    handle->length = *length;
+    return (void*)handle;
+}
+
+void close_spi(void* handle) {
+    free(handle);
+}
+
+int32_t read_spi(PNGFILE* png, uint8_t* buffer, int32_t length) {
+    spi_file* handle = (spi_file*)png->fHandle;
+    int32_t bytes_read = length;
+    if((handle->length - handle->pos) < length) {
+        bytes_read = (handle->length - handle->pos);
+    }
+    if(length <= 0) {
+        return 0;
+    }
+    bytes_read = spi_sram.read(handle->base + handle->pos, {buffer, (uint32_t)bytes_read});
+    handle->pos += bytes_read;
+    png->iPos += bytes_read;
+    return bytes_read;
+}
+
+int32_t seek_spi(PNGFILE *png, int32_t pos) {
+    spi_file* handle = (spi_file*)png->fHandle;
+    if(pos <= 0) {
+        pos = 0;
+    } else if(pos > handle->length) {
+        pos = handle->length - 1;
+    }
+    handle->pos = pos;
+    png->iPos = pos;
+    return pos;
+}
+
+bool download_chunked_map(weather_map* scratch, std::string target, bool final, uint32_t map_index, uint32_t length) {
+    constexpr uint32_t chunk_size = 2048;
+    uint32_t downloaded = 0;
+    char buf[32];
+    uint8_t timeouts = 3;
+    info("Attempting chunked download of image of length %d\n", length);
+    while(downloaded < length) {
+        client->header("Connection", final && (downloaded + chunk_size > length) ? "close" : "keep-alive");
+        sprintf(buf, "bytes=%d-%d", downloaded, MIN(downloaded + chunk_size - 1, length));
+        client->header("Range", buf);
+        client->get(target);
+        uint32_t timeout = 3000;
+        while(timeout > 0 && !client->has_response()) {
+            sleep_ms(10);
+            timeout--;
+        }
+        if(timeout == 0 && timeouts > 0) {
+            error1("Timed out!\n");
+            timeouts--;
+            continue;
+        } else if(timeouts == 0) {
+            return false;
+        }
+        const std::string_view& body = client->response().get_body();
+        int32_t written = spi_sram.write(CONFIG_ADDR + sizeof(config_t) + sizeof(int32_t) * 2 + downloaded, {(uint8_t*)body.data(), body.size()});
+        downloaded += body.size();
+        printf("Downloaded %d / %d\r", downloaded, length);
+    }
+    printf("\n");
+    spi_sram.write(CONFIG_ADDR + sizeof(config_t) + sizeof(int32_t), {(uint8_t*)&downloaded, sizeof(downloaded)});
+    if(length > 0) {
+        int rc = png_decoder.open(nullptr, open_spi, close_spi, read_spi, seek_spi, png_draw_callback);
+        return decode_png(rc, scratch, map_index);
+    }
+    return false;
 }
 
 uint8_t download_weather_maps(json& rain_maps, double lat, double lon, uint8_t z, weather_map* scratch, repeating_timer_t* timer) {
@@ -363,14 +454,14 @@ uint8_t download_weather_maps(json& rain_maps, double lat, double lon, uint8_t z
         std::string_view content_length = response.get_headers().at("Content-Length");
         std::from_chars(content_length.begin(), content_length.end(), length);
         scratch->load(maps[to_download[i]["idx"].get<uint32_t>()], false);
-        if(length < TCP_WND) {
+        auto header = response.get_headers().find("Accept-Ranges");
+        // if(length < (int)(TCP_WND * 0.75)) {
             download_full_map(scratch, target, i == to_download.size() - 1, to_download[i]["idx"].get<uint32_t>());
-        } else if(response.get_headers().at("Accept-Ranges") == "bytes") {
-            // download_chunked_map(scratch, client, target, i == to_download.size() - 1, to_download[i]["idx"].get<uint32_t>(), length);
-            info1("Would try partial download here.\n");
-        } else {
-            info1("Cannot download image, partial download not supported for this image.\n");
-        }
+        // } else if(header != response.get_headers().end() && header->second == "bytes") {
+            // download_chunked_map(scratch, target, i == to_download.size() - 1, to_download[i]["idx"].get<uint32_t>(), length);
+        // } else {
+            // info1("Cannot download image, partial download not supported for this image.\n");
+        // }
         add_repeating_timer_us(timer->delay_us, timer->callback, timer->user_data, timer);
     }
     // Wait for the connection to close
@@ -402,31 +493,27 @@ struct refresh_data {
     uint32_t map_advance;
     uint32_t* map_increment;
     float temperature;
+    bool enable;
 };
 
-void redraw_map(rgb_matrix<64, 64>*, MC_23LCV1024*, uint8_t, uint8_t, float);
+void redraw_map(rgb_matrix<64, 64>*, MC_23LCV1024*, uint8_t, uint8_t, float, bool);
 
 bool refresh_display_timer(repeating_timer_t* rt) {
     refresh_data* data = (refresh_data*)rt->user_data;
-    trace("Redrawing map...\n    map_advance = %d\n    display_index = %d\n", data->map_advance, data->display_index);
-    redraw_map(data->matrix, data->sram, *data->start, data->display_index, data->temperature);
+    //trace("Redrawing map...\n    map_advance = %d\n    display_index = %d\n", data->map_advance, data->display_index);
+    redraw_map(data->matrix, data->sram, *data->start, data->display_index, data->temperature, data->enable);
 
     if(data->map_advance >= 600) {
         data->map_advance = 0;
         data->display_index = (data->display_index + 1) % 16;
     }
     data->map_advance += *data->map_increment;
-    trace1("Redrew map.\n");
+    //trace1("Redrew map.\n");
     return true;
 }
 
-struct config_t {
-    uint8_t speed;
-    uint8_t palette;
-    uint16_t padding;
-};
-
 config_t config;
+refresh_data refresh_config;
 volatile uint8_t current_palette = DEFAULT_PALETTE;
 volatile uint32_t current_speed = DEFAULT_SPEED;
 absolute_time_t last_call = get_absolute_time();
@@ -449,6 +536,27 @@ void change_palette_interrupt(uint pin, uint32_t event_mask) {
         }
         config.speed = current_speed;
     }
+    if(pin == SPEED_PIN && mqtt_ptr && mqtt_ptr->connected()) {
+        std::string speed = std::to_string(config.speed);
+        mqtt::publish_packet::flags_t flags{};
+        flags.qos(1);
+        flags.retain(true);
+        mqtt_ptr->publish(speed_topic, flags, {(u8_t*)speed.data(), speed.size()});
+    } else if(mqtt_ptr && mqtt_ptr->connected()) {
+        std::string palette = std::to_string(config.palette);
+        mqtt::publish_packet::flags_t flags{};
+        flags.qos(1);
+        flags.retain(true);
+        mqtt_ptr->publish(palette_topic, flags, {(u8_t*)palette.data(), palette.size()});
+    }
+    if(!refresh_config.enable && mqtt_ptr && mqtt_ptr->connected()) {
+        std::string state = "ON";
+        mqtt::publish_packet::flags_t flags{};
+        flags.qos(1);
+        flags.retain(true);
+        mqtt_ptr->publish(display_topic, flags, {(u8_t*)state.data(), state.size()});
+    }
+    refresh_config.enable = true;
     save_config();
 }
 
@@ -457,40 +565,44 @@ uint32_t forward_distance_mod_n(int32_t first, int32_t second, uint32_t n) {
     return distance >= 0 ? distance : n + distance;
 }
 
-void redraw_map(rgb_matrix<64, 64>* matrix, MC_23LCV1024* sram, uint8_t start, uint8_t display_index, float temperature) {
+void redraw_map(rgb_matrix<64, 64>* matrix, MC_23LCV1024* sram, uint8_t start, uint8_t display_index, float temperature, bool enable) {
     uint32_t index = display_index * 4096;
     uint8_t pixel = 0;
     for(int row = 0; row < 64; row++) {
         for(int col = 0; col < 64; col++) {
             // row * 64 + col
-            sram->read(index + row * 64 + col, {&pixel, 1});
+            if(enable) {
+                sram->read(index + row * 64 + col, {&pixel, 1});
+            }
             matrix->set_pixel(row, col, palettes[current_palette][pixel]);
         }
     }
-    datetime_t datetime;
-    rtc_get_datetime(&datetime);
-    struct tm time = ntp_client::localtime(datetime);
-    char date_str[8];
-    char time_str[8];
-    char map_time_str[8];
-    char temperature_str[8];
-    size_t date_len = std::strftime(date_str, 8, "%m-%d", &time);
-    size_t time_len = std::strftime(time_str, 8, "%R", &time);
-    struct tm map_time = ntp_client::localtime(maps[display_index].timestamp());
-    size_t map_time_len = std::strftime(map_time_str, 8, "%R", &map_time);
-    sprintf(temperature_str, "% 3.1f\xb0""F", temperature);
+    if(enable) {
+        datetime_t datetime;
+        rtc_get_datetime(&datetime);
+        struct tm time = ntp_client::localtime(datetime);
+        char date_str[10];
+        char time_str[10];
+        char map_time_str[10];
+        char temperature_str[10];
+        size_t date_len = std::strftime(date_str, 8, "%m-%d", &time);
+        size_t time_len = std::strftime(time_str, 8, "%R", &time);
+        struct tm map_time = ntp_client::localtime(maps[display_index].timestamp());
+        size_t map_time_len = std::strftime(map_time_str, 8, "%R", &map_time);
+        sprintf(temperature_str, "% 3.1f\xb0""F", temperature);
 
-    matrix->draw_str(11, 2, 0xFFFFFFFF, {date_str, date_len});
-    matrix->draw_str(17, 2, 0xFFFFFFFF, {time_str, time_len});
-    matrix->draw_str(23, 2, 0xFFFFFFFF, {map_time_str, map_time_len});
-    matrix->draw_str(11, 35, 0xFFFFFFFF, {temperature_str, 7});
-    for(int i = 1; i <= 8; i++) {
-        matrix->set_pixel(62, i - 1, palettes[current_palette][16 * i - 1]);
-        matrix->set_pixel(63, i - 1, palettes[current_palette][(16 * i - 1) | 0x80]);
-    }
-    uint32_t distance = forward_distance_mod_n(start, display_index, 16);
-    for(int i = 0; i < 16; i++) {
-        matrix->set_pixel(63, i + 24, (MAX(255 - 20 * (i + 1), 10)) & 0xFF | (MAX(10, 85 * (i + 1 - 13)) & 0xFF) << 16 | (i == distance ? 0x0000b700 : 0));
+        matrix->draw_str(11, 2, 0xFFFFFFFF, {date_str, date_len});
+        matrix->draw_str(17, 2, 0xFFFFFFFF, {time_str, time_len});
+        matrix->draw_str(23, 2, 0xFFFFFFFF, {map_time_str, map_time_len});
+        matrix->draw_str(11, 35, 0xFFFFFFFF, {temperature_str, 7});
+        for(int i = 1; i <= 8; i++) {
+            matrix->set_pixel(62, i - 1, palettes[current_palette][16 * i - 1]);
+            matrix->set_pixel(63, i - 1, palettes[current_palette][(16 * i - 1) | 0x80]);
+        }
+        uint32_t distance = forward_distance_mod_n(start, display_index, 16);
+        for(int i = 0; i < 16; i++) {
+            matrix->set_pixel(63, i + 24, (MAX(255 - 20 * (i + 1), 10)) & 0xFF | (MAX(10, 85 * (i + 1 - 13)) & 0xFF) << 16 | (i == distance ? 0x0000b700 : 0));
+        }
     }
     matrix->flip_buffer();
 }
@@ -586,15 +698,70 @@ int main() {
     http_client http("https://api.rainviewer.com", {(uint8_t*)ISRG_ROOT_X1_CERT, sizeof(ISRG_ROOT_X1_CERT)});
     client = &http;
 
+    bool mqtt_has_connected = false;
+    mqtt::client mqtt_client("mqtts://homeassistant.local", {(uint8_t*)ISRG_ROOT_X1_CERT, sizeof(ISRG_ROOT_X1_CERT)});
+    mqtt_ptr = &mqtt_client;
+    mqtt_client.connect(mqtt_username, mqtt_password);
+    mqtt_client.on_connect([&mqtt_client, &mqtt_has_connected](){
+        std::vector<std::u8string> subs = {
+            display_topic,
+            speed_topic,
+            palette_topic,
+            temperature_topic,
+        };
+        std::vector<mqtt::subscribe_packet::options_t> options = {
+            mqtt::subscribe_packet::options_t{2, true, false, 0},
+            mqtt::subscribe_packet::options_t{2, true, false, 0},
+            mqtt::subscribe_packet::options_t{2, true, false, 0},
+            mqtt::subscribe_packet::options_t{2, false, false, 0},
+        };
+        mqtt_client.subscribe(subs, options, [subs](std::u8string_view topic, const mqtt::properties& props, std::span<uint8_t> data){
+            std::string_view payload{(char*)data.data(), data.size()};
+            if(topic == subs[0]) {
+                refresh_config.enable = (payload == "ON");
+            } else if(topic == subs[1]) {
+                uint8_t value;
+                auto result = std::from_chars(payload.begin(), payload.end(), value);
+                if(result.ec != std::errc()) {
+                    return mqtt::reason_code::ERROR_IMPL_SPECIFIC;
+                }
+                config.speed = std::min(value, (uint8_t)MAX_SPEED);
+                current_speed = config.speed;
+                save_config();
+            } else if(topic == subs[2]) {
+                uint8_t value;
+                auto result = std::from_chars(payload.begin(), payload.end(), value);
+                if(result.ec != std::errc()) {
+                    return mqtt::reason_code::ERROR_IMPL_SPECIFIC;
+                }
+                config.palette = value % (sizeof(palettes) / sizeof(uint32_t*));
+                current_palette = config.palette;
+                save_config();
+            } else if(topic == subs[3]) {
+                std::string float_string{payload.begin(), payload.end()};
+                float value = std::stof(float_string);
+                refresh_config.temperature = value;
+            }
+            return mqtt::reason_code::SUCCESS;
+        });
+        mqtt_has_connected = true;
+    });
+
     ip_addr_t address;
-    IP4_ADDR(&address, 192, 168, 0, 6);
+    IP4_ADDR(&address, 192, 168, 0, 2);
     info1("Setting local dns host...");
     err_t rc = dns_local_addhost("weewx.fluorine.local", &address);
     info_cont(" rc = %d\n", rc);
 
+    IP4_ADDR(&address, 192, 168, 0, 1);
+    info1("Setting dns servers...\n");
+    dns_setserver(0, &address);
+    IP4_ADDR(&address, 1, 1, 1, 1);
+    dns_setserver(1, &address);
+
     bool update_maps = true, update_temp = true;
     uint8_t start = 0;
-    refresh_data refresh_config;
+
     refresh_config.matrix = matrix;
     refresh_config.sram = &spi_sram;
     refresh_config.start = &start;
@@ -602,6 +769,7 @@ int main() {
     refresh_config.map_advance = 0;
     refresh_config.map_increment = (uint32_t*)&current_speed;
     refresh_config.temperature = 0.0f;
+    refresh_config.enable = false;
     repeating_timer_t timer_data;
 
     bool success = add_repeating_timer_us(-100000, refresh_display_timer, &refresh_config, &timer_data);
@@ -652,6 +820,10 @@ int main() {
             update_temp = false;
             // Update every 5 minutes
             add_alarm_in_ms(300000, update_temperature_alarm, &update_temp, true);
+        }
+        if(!mqtt_client.connected() && mqtt_has_connected) {
+            mqtt_client.connect(mqtt_username, mqtt_password);
+            mqtt_has_connected = false;
         }
     }
 
