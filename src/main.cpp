@@ -715,6 +715,8 @@ void perform_discovery(std::string unique_id) {
     discovery["dev"] = {};
     discovery["dev"]["ids"] = {(char*)unique_id.c_str()};
     discovery["dev"]["name"] = "Rainviewer";
+    discovery["dev"]["mf"] = "ryanjsims";
+    discovery["dev"]["mdl"] = unique_id;
     discovery["o"] = {};
     discovery["o"]["name"] = "ryanjsims";
     discovery["o"]["sw"] = "1.0";
@@ -788,7 +790,7 @@ int main() {
     char board_id[2 * PICO_UNIQUE_BOARD_ID_SIZE_BYTES + 1];
     pico_get_unique_board_id_string(board_id, sizeof(board_id));
 
-    std::u8string u8unique_id = string_format(u8"rv-%.*s", 4, board_id + (sizeof(board_id) - 5));
+    std::u8string u8unique_id = string_format(u8"RV-%.*s", 4, board_id + (sizeof(board_id) - 5));
     std::string unique_id = {(char*)u8unique_id.data(), (char*)u8unique_id.data() + u8unique_id.size()};
 
     speed_topic_prefix = u8"homeassistant/number/" + u8unique_id + u8"/frequency";
