@@ -92,7 +92,8 @@ std::u8string temperature_topic_prefix;
 std::u8string discovery_topic = u8"/config";
 std::u8string command_topic = u8"/set";
 std::u8string state_topic = u8"/state";
-std::u8string availability_topic = u8"/avail";
+std::u8string availability_topic;
+const std::u8string homeassistant_status_topic = u8"homeassistant/status";
 const std::u8string mqtt_username = (const char8_t*)MQTT_USERNAME;
 const std::u8string mqtt_password = (const char8_t*)MQTT_PASSWORD;
 
@@ -710,7 +711,7 @@ void perform_discovery(std::string unique_id) {
     json discovery;
     discovery["name"] = "Display";
     discovery["~"] = (char*)display_topic_prefix.c_str();
-    discovery["avty_t"] = (char*)(u8"~" + availability_topic).c_str();
+    discovery["avty_t"] = (char*)(availability_topic).c_str();
     discovery["cmd_t"] = (char*)(u8"~" + command_topic).c_str();
     discovery["dev"] = {};
     discovery["dev"]["ids"] = {(char*)unique_id.c_str()};
@@ -773,10 +774,7 @@ void perform_discovery(std::string unique_id) {
 
     std::string available = "online";
     flags.retain(true);
-    mqtt_ptr->publish(display_topic_prefix + availability_topic, flags, {(uint8_t*)available.data(), available.size()});
-    mqtt_ptr->publish(speed_topic_prefix + availability_topic, flags, {(uint8_t*)available.data(), available.size()});
-    mqtt_ptr->publish(palette_topic_prefix + availability_topic, flags, {(uint8_t*)available.data(), available.size()});
-    mqtt_ptr->publish(temperature_topic_prefix + availability_topic, flags, {(uint8_t*)available.data(), available.size()});
+    mqtt_ptr->publish(availability_topic, flags, {(uint8_t*)available.data(), available.size()});
     info1("MQTT discovery publishes complete\n");
 }
 
@@ -797,6 +795,7 @@ int main() {
     palette_topic_prefix = u8"homeassistant/select/" + u8unique_id + u8"/palette";
     display_topic_prefix = u8"homeassistant/switch/" + u8unique_id + u8"/display";
     temperature_topic_prefix = u8"homeassistant/number/" + u8unique_id + u8"/temperature";
+    availability_topic = u8"homeassistant/device/" + u8unique_id + u8"/avail";
     std::u8string command_topic_filter = u8"homeassistant/+/" + u8unique_id + u8"/+/set";
 
     std::vector<std::u8string> command_topics = {
@@ -900,7 +899,7 @@ int main() {
     bool mqtt_has_connected = false, mqtt_connecting = false;
     mqtt::client mqtt_client("mqtts://homeassistant.local", {(uint8_t*)ISRG_ROOT_X1_CERT, sizeof(ISRG_ROOT_X1_CERT)});
     mqtt_ptr = &mqtt_client;
-    mqtt::publish_handler_t mqtt_sub_handler = [&command_topics, &mqtt_client](std::u8string_view topic, const mqtt::properties& props, std::span<uint8_t> data){
+    mqtt::publish_handler_t mqtt_sub_handler = [&command_topics, &mqtt_client](std::u8string_view topic, const mqtt::properties& props, std::span<uint8_t> data) {
         std::string_view payload{(char*)data.data(), data.size()};
         mqtt::publish_packet::flags_t flags;
         flags.qos(1);
@@ -936,13 +935,30 @@ int main() {
         return mqtt::reason_code::SUCCESS;
     };
 
-    mqtt_client.connect(mqtt_username, mqtt_password);
-    mqtt_client.on_connect([&mqtt_client, &mqtt_has_connected, &mqtt_sub_handler, &command_topic_filter, &unique_id](){
+    mqtt::publish_handler_t mqtt_disc_handler = [&mqtt_client, &unique_id](std::u8string_view topic, const mqtt::properties& props, std::span<uint8_t> data) {
+        std::string_view message = {(char*)data.data(), data.size()};
+        if(message == "online") {
+            perform_discovery(unique_id);
+        }
+        return mqtt::reason_code::SUCCESS;
+    };
+
+    std::string will_payload = "offline";
+    
+    mqtt_client.connect(
+        mqtt_username,
+        {(uint8_t*)mqtt_password.data(), mqtt_password.size()},
+        15, availability_topic,
+        {(uint8_t*)will_payload.data(), will_payload.size()},
+        0, true, {}, {}
+    );
+    mqtt_client.on_connect([&mqtt_client, &unique_id, &command_topic_filter, &mqtt_has_connected, &mqtt_sub_handler, &mqtt_disc_handler]() {
         mqtt_has_connected = true;
         perform_discovery(unique_id);
 
         auto options = mqtt::subscribe_packet::options_t{2, false, false, 0};
         mqtt_client.subscribe(command_topic_filter, options, mqtt_sub_handler);
+        mqtt_client.subscribe(homeassistant_status_topic, options, mqtt_disc_handler);
     });
 
     while(1) {
