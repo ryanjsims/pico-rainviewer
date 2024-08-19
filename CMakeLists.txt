@@ -50,15 +50,22 @@ target_link_libraries(pico_rainviewer PRIVATE
     hardware_spi
     PNGdec
 )
+message($ENV{MQTT_PASSWORD})
+message($ENV{LAT})
+message($ENV{LNG})
 target_compile_options(pico_rainviewer PRIVATE "-Wno-psabi")
 target_compile_definitions(pico_rainviewer PRIVATE 
     "WIFI_SSID=\"$ENV{WIFI_SSID}\""
     "WIFI_PASSWORD=\"$ENV{WIFI_PASSWORD}\""
+    "MQTT_USERNAME=\"$ENV{MQTT_USERNAME}\""
+    "MQTT_PASSWORD=\"$ENV{MQTT_PASSWORD}\""
     "LOG_LEVEL=$ENV{LOG_LEVEL}"
     "LAT=$ENV{LAT}"
     "LNG=$ENV{LNG}"
     "ZOOM=$ENV{ZOOM}"
     "TIMEZONE=\"$ENV{TIMEZONE}\""
+    "PICO_DEFAULT_UART_TX_PIN=16"
+	"PICO_DEFAULT_UART_RX_PIN=17"
 )
 target_link_options(pico_rainviewer PRIVATE "-Wl,--print-memory-usage")
 

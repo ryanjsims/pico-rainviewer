@@ -4,7 +4,7 @@ This is a Raspberry Pi Pico W project that is meant to be similar in behavior to
 
 This Pico W version uses the following libraries:
  * [pico-sdk](https://github.com/raspberrypi/pico-sdk)
- * My [pico-web-client](https://github.com/ryanjsims/pico-web-client) library for https requests
+ * My [pico-web-client](https://github.com/ryanjsims/pico-web-client) library for mqtt and https requests
     * This library also uses [nlohmann/json](https://github.com/nlohmann/json) to parse downloaded json documents
  * The [PNGdec library](https://github.com/bitbank2/PNGdec) for decoding downloaded PNGs
 

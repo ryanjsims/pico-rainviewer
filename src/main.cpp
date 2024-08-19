@@ -93,8 +93,8 @@ std::u8string discovery_topic = u8"/config";
 std::u8string command_topic = u8"/set";
 std::u8string state_topic = u8"/state";
 std::u8string availability_topic = u8"/avail";
-const std::u8string mqtt_username = u8"pico";
-const std::u8string mqtt_password = u8"I~i=/*\\{c.vz2VA/G[cC<s<J3";
+const std::u8string mqtt_username = (const char8_t*)MQTT_USERNAME;
+const std::u8string mqtt_password = (const char8_t*)MQTT_PASSWORD;
 
 weather_map_ext maps[16];
 PNG png_decoder;
@@ -161,6 +161,17 @@ std::u8string string_format(const std::u8string& format, Args ... args)
     char8_t buf[size];
     std::snprintf((char*)buf, size, (const char*)format.c_str(), args...);
     return std::u8string(buf, buf + size - 1); // We don't want the '\0' inside
+}
+
+template<typename ... Args>
+std::string string_format(const std::string& format, Args ... args)
+{
+    int size_s = std::snprintf(nullptr, 0, (const char*)format.c_str(), args...) + 1; // Extra space for '\0'
+    if( size_s <= 0 ){ return ""; }
+    auto size = static_cast<size_t>( size_s );
+    char buf[size];
+    std::snprintf((char*)buf, size, (const char*)format.c_str(), args...);
+    return std::string(buf, buf + size - 1); // We don't want the '\0' inside
 }
 
 // TODO: Add last modified header check - if last modified hasn't changed, delay the update for a minute
@@ -584,11 +595,12 @@ void update_temperature_state() {
     if(!(mqtt_ptr && mqtt_ptr->connected())) {
         return;
     }
-    std::string state = std::to_string(refresh_config.temperature);
+    char buff[16];
+    int written = std::snprintf(buff, sizeof(buff), "%.1f", refresh_config.temperature);
     mqtt::publish_packet::flags_t flags{};
     flags.qos(1);
     flags.retain(true);
-    mqtt_ptr->publish(temperature_topic_prefix + state_topic, flags, {(u8_t*)state.data(), state.size()});
+    mqtt_ptr->publish(temperature_topic_prefix + state_topic, flags, {(u8_t*)buff, (size_t)written});
 }
 
 void save_config();
@@ -693,49 +705,63 @@ void save_config() {
     info("Saved config:\n    speed %d\n    palette %d\n    crc 0x%08x\n", config.speed, config.palette, config_crc32);
 }
 
-void perform_discovery(std::u8string unique_id) {
+void perform_discovery(std::string unique_id) {
     info1("Performing MQTT discovery...\n");
     json discovery;
-    discovery["name"] = nullptr;
-    discovery["~"] = display_topic_prefix;
-    discovery["command_topic"] = u8"~" + command_topic;
-    discovery["state_topic"] = u8"~" + state_topic;
-    discovery["availability_topic"] = u8"~" + availability_topic;
-    discovery["unique_id"] = unique_id + u8"_display";
-    discovery["device"] = {};
-    discovery["device"]["identifiers"] = {unique_id};
+    discovery["name"] = "Display";
+    discovery["~"] = (char*)display_topic_prefix.c_str();
+    discovery["avty_t"] = (char*)(u8"~" + availability_topic).c_str();
+    discovery["cmd_t"] = (char*)(u8"~" + command_topic).c_str();
+    discovery["dev"] = {};
+    discovery["dev"]["ids"] = {(char*)unique_id.c_str()};
+    discovery["dev"]["name"] = "Rainviewer";
+    discovery["o"] = {};
+    discovery["o"]["name"] = "ryanjsims";
+    discovery["o"]["sw"] = "1.0";
+    discovery["o"]["url"] = "https://github.com/ryanjsims/pico-rainviewer";
+    discovery["qos"] = 1;
+    discovery["stat_t"] = (char*)(u8"~" + state_topic).c_str();
+    discovery["uniq_id"] = unique_id + "-display";
 
     auto flags = mqtt::publish_packet::flags_t();
     flags.qos(1);
 
     std::string discovery_string = discovery.dump();
+    info("Publishing display discovery\n%.*s\n", discovery_string.size(), discovery_string.data());
     mqtt_ptr->publish(display_topic_prefix + discovery_topic, flags, {(uint8_t*)discovery_string.data(), discovery_string.size()});
 
-    discovery["~"] = palette_topic_prefix;
-    discovery["options"] = palette_names;
-    discovery["unique_id"] = unique_id + u8"_palette";
+    discovery["~"] = (char*)(palette_topic_prefix).c_str();
+    discovery["name"] = "Palette";
+    discovery["ops"] = palette_names;
+    discovery["uniq_id"] = unique_id + "-palette";
 
     discovery_string = discovery.dump();
+    info("Publishing palette discovery\n%.*s\n", discovery_string.size(), discovery_string.data());
     mqtt_ptr->publish(palette_topic_prefix + discovery_topic, flags, {(uint8_t*)discovery_string.data(), discovery_string.size()});
 
-    discovery["~"] = speed_topic_prefix;
+    discovery["~"] = (char*)(speed_topic_prefix).c_str();
     discovery["min"] = 0;
     discovery["max"] = MAX_SPEED;
     discovery["mode"] = "slider";
-    discovery["unique_id"] = unique_id + u8"_speed";
-    discovery.erase("options");
+    discovery["name"] = "Refresh Delay";
+    discovery["uniq_id"] = unique_id + "-speed";
+    discovery.erase("ops");
 
     discovery_string = discovery.dump();
+    info("Publishing speed discovery\n%.*s\n", discovery_string.size(), discovery_string.data());
     mqtt_ptr->publish(speed_topic_prefix + discovery_topic, flags, {(uint8_t*)discovery_string.data(), discovery_string.size()});
     
-    discovery["~"] = temperature_topic_prefix;
+    discovery["~"] = (char*)(temperature_topic_prefix).c_str();
     discovery["min"] = -150;
     discovery["max"] = 150;
     discovery["mode"] = "box";
+    discovery["name"] = "Temperature";
+    discovery["step"] = 0.1;
     discovery["unit_of_meas"] = "°F";
-    discovery["unique_id"] = unique_id + u8"_temperature";
+    discovery["uniq_id"] = unique_id + "-temperature";
 
     discovery_string = discovery.dump();
+    info("Publishing temperature discovery\n%.*s\n", discovery_string.size(), discovery_string.data());
     mqtt_ptr->publish(temperature_topic_prefix + discovery_topic, flags, {(uint8_t*)discovery_string.data(), discovery_string.size()});
 
     update_display_state();
@@ -762,13 +788,14 @@ int main() {
     char board_id[2 * PICO_UNIQUE_BOARD_ID_SIZE_BYTES + 1];
     pico_get_unique_board_id_string(board_id, sizeof(board_id));
 
-    std::u8string unique_id = string_format(u8"rv-%.*s", sizeof(board_id) - 1, board_id);
+    std::u8string u8unique_id = string_format(u8"rv-%.*s", 4, board_id + (sizeof(board_id) - 5));
+    std::string unique_id = {(char*)u8unique_id.data(), (char*)u8unique_id.data() + u8unique_id.size()};
 
-    speed_topic_prefix = u8"homeassistant/number/" + unique_id + u8"/frequency";
-    palette_topic_prefix = u8"homeassistant/select/" + unique_id + u8"/palette";
-    display_topic_prefix = u8"homeassistant/switch/" + unique_id + u8"/display";
-    temperature_topic_prefix = u8"homeassistant/number/" + unique_id + u8"/temperature";
-    std::u8string command_topic_filter = u8"homeassistant/+/" + unique_id + u8"/+/set";
+    speed_topic_prefix = u8"homeassistant/number/" + u8unique_id + u8"/frequency";
+    palette_topic_prefix = u8"homeassistant/select/" + u8unique_id + u8"/palette";
+    display_topic_prefix = u8"homeassistant/switch/" + u8unique_id + u8"/display";
+    temperature_topic_prefix = u8"homeassistant/number/" + u8unique_id + u8"/temperature";
+    std::u8string command_topic_filter = u8"homeassistant/+/" + u8unique_id + u8"/+/set";
 
     std::vector<std::u8string> command_topics = {
         display_topic_prefix + command_topic,
@@ -859,7 +886,7 @@ int main() {
     refresh_config.map_advance = 0;
     refresh_config.map_increment = (uint32_t*)&current_speed;
     refresh_config.temperature = 0.0f;
-    refresh_config.enable = false;
+    refresh_config.enable = true;
     repeating_timer_t timer_data;
 
     bool success = add_repeating_timer_us(-100000, refresh_display_timer, &refresh_config, &timer_data);
@@ -871,10 +898,13 @@ int main() {
     bool mqtt_has_connected = false, mqtt_connecting = false;
     mqtt::client mqtt_client("mqtts://homeassistant.local", {(uint8_t*)ISRG_ROOT_X1_CERT, sizeof(ISRG_ROOT_X1_CERT)});
     mqtt_ptr = &mqtt_client;
-    mqtt::publish_handler_t mqtt_sub_handler = [&command_topics](std::u8string_view topic, const mqtt::properties& props, std::span<uint8_t> data){
+    mqtt::publish_handler_t mqtt_sub_handler = [&command_topics, &mqtt_client](std::u8string_view topic, const mqtt::properties& props, std::span<uint8_t> data){
         std::string_view payload{(char*)data.data(), data.size()};
+        mqtt::publish_packet::flags_t flags;
+        flags.qos(1);
         if(topic == command_topics[0]) {
             refresh_config.enable = (payload == "ON");
+            update_display_state();
         } else if(topic == command_topics[1]) {
             uint8_t value;
             auto result = std::from_chars(payload.begin(), payload.end(), value);
@@ -884,6 +914,7 @@ int main() {
             config.speed = std::min(value, (uint8_t)MAX_SPEED);
             current_speed = config.speed;
             save_config();
+            update_speed_state();
         } else if(topic == command_topics[2]) {
             uint8_t value;
             auto result = std::from_chars(payload.begin(), payload.end(), value);
@@ -893,13 +924,24 @@ int main() {
             config.palette = value % (sizeof(palettes) / sizeof(uint32_t*));
             current_palette = config.palette;
             save_config();
+            update_palette_state();
         } else if(topic == command_topics[3]) {
             std::string float_string{payload.begin(), payload.end()};
             float value = std::stof(float_string);
             refresh_config.temperature = value;
+            update_temperature_state();
         }
         return mqtt::reason_code::SUCCESS;
     };
+
+    mqtt_client.connect(mqtt_username, mqtt_password);
+    mqtt_client.on_connect([&mqtt_client, &mqtt_has_connected, &mqtt_sub_handler, &command_topic_filter, &unique_id](){
+        mqtt_has_connected = true;
+        perform_discovery(unique_id);
+
+        auto options = mqtt::subscribe_packet::options_t{2, false, false, 0};
+        mqtt_client.subscribe(command_topic_filter, options, mqtt_sub_handler);
+    });
 
     while(1) {
         if(update_maps && ntp.state() == ntp_state::SYNCED && mqtt_client.connected()) {
@@ -945,21 +987,8 @@ int main() {
             add_alarm_in_ms(300000, update_temperature_alarm, &update_temp, true);
         }
         if(!mqtt_client.connected() && mqtt_has_connected && ntp.state() == ntp_state::SYNCED) {
-            mqtt_has_connected = false;
-            mqtt_connecting = false;
-        }
-        if(!mqtt_client.connected() && !mqtt_connecting && ntp.state() == ntp_state::SYNCED) {
             mqtt_client.connect(mqtt_username, mqtt_password);
-            mqtt_client.on_connect([&mqtt_client, &mqtt_has_connected, &mqtt_connecting, &command_topic_filter, &unique_id](){
-                mqtt_has_connected = true;
-                mqtt_connecting = false;
-            });
-
-            perform_discovery(unique_id);
-
-            auto options = mqtt::subscribe_packet::options_t{2, false, false, 0};
-            mqtt_client.subscribe(command_topic_filter, options, mqtt_sub_handler);
-            mqtt_connecting = true;
+            mqtt_has_connected = false;
         }
     }
 
