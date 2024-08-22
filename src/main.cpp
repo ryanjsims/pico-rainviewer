@@ -565,7 +565,8 @@ std::vector<std::string> palette_names = {
 };
 
 void update_speed_state() {
-    if(!(mqtt_ptr && mqtt_ptr->connected())) {
+    if(!mqtt_ptr || !mqtt_ptr->connected()) {
+        warn1("MQTT not connected, not updating speed state\n");
         return;
     }
     std::string speed = std::to_string(config.speed);
@@ -576,7 +577,8 @@ void update_speed_state() {
 }
 
 void update_palette_state() {
-    if(!(mqtt_ptr && mqtt_ptr->connected())) {
+    if(!mqtt_ptr || !mqtt_ptr->connected()) {
+        warn1("MQTT not connected, not updating palette state\n");
         return;
     }
     std::string palette = palette_names[config.palette];
@@ -587,7 +589,8 @@ void update_palette_state() {
 }
 
 void update_display_state() {
-    if(!(mqtt_ptr && mqtt_ptr->connected())) {
+    if(!mqtt_ptr || !mqtt_ptr->connected()) {
+        warn1("MQTT not connected, not updating display state\n");
         return;
     }
     std::string state = refresh_config.enable ? "ON" : "OFF";
@@ -598,7 +601,8 @@ void update_display_state() {
 }
 
 void update_temperature_state() {
-    if(!(mqtt_ptr && mqtt_ptr->connected())) {
+    if(!mqtt_ptr || !mqtt_ptr->connected()) {
+        warn1("MQTT not connected, not updating temperature state\n");
         return;
     }
     char buff[16];
@@ -901,7 +905,6 @@ int main() {
     uint64_t generated_timestamp = 0;
     char buf[128];
 
-    bool mqtt_has_connected = false, mqtt_connecting = false;
     mqtt::client mqtt_client("mqtts://homeassistant.local", {(uint8_t*)ISRG_ROOT_X1_CERT, sizeof(ISRG_ROOT_X1_CERT)});
     mqtt_ptr = &mqtt_client;
     mqtt::publish_handler_t mqtt_sub_handler = [&command_topics, &mqtt_client](std::u8string_view topic, const mqtt::properties& props, std::span<uint8_t> data) {
@@ -949,16 +952,7 @@ int main() {
     };
 
     std::string will_payload = "offline";
-    
-    mqtt_client.connect(
-        mqtt_username,
-        {(uint8_t*)mqtt_password.data(), mqtt_password.size()},
-        15, availability_topic,
-        {(uint8_t*)will_payload.data(), will_payload.size()},
-        0, true, {}, {}
-    );
-    mqtt_client.on_connect([&mqtt_client, &unique_id, &command_topic_filter, &mqtt_has_connected, &mqtt_sub_handler, &mqtt_disc_handler]() {
-        mqtt_has_connected = true;
+    mqtt_client.on_connect([&mqtt_client, &unique_id, &command_topic_filter, &mqtt_sub_handler, &mqtt_disc_handler]() {
         perform_discovery(unique_id);
 
         auto options = mqtt::subscribe_packet::options_t{2, false, false, 0};
@@ -967,7 +961,9 @@ int main() {
     });
 
     while(1) {
-        if(update_maps && ntp.state() == ntp_state::SYNCED && mqtt_client.connected()) {
+        bool ntp_synced = ntp.state() == ntp_state::SYNCED;
+        if(update_maps && ntp_synced) {
+            info1("Updating weather maps\n");
             rain_maps.clear();
             uint8_t retries = 2;
             bool success = parse_weather_maps(&rain_maps, &generated_timestamp, &timer_data);
@@ -980,6 +976,7 @@ int main() {
                 // Wait 10 seconds, then try again if no request succeeded
                 add_alarm_in_ms(10 * 1000, update_maps_alarm, &update_maps, true);
                 update_maps = false;
+                info1("Failed to update maps, trying in 10 seconds\n");
                 continue;
             }
             
@@ -1001,17 +998,21 @@ int main() {
             std::strftime(buf, 128, "%F %T UTC%z", localtime_r(&converted, &time));
 
             info("Updated maps, sleeping until %s\n", buf);
-        }
-        if(update_temp && ntp.state() == ntp_state::SYNCED && mqtt_client.connected()) {
+        } else if(update_temp && ntp_synced) {
             info1("Updating temperature\n");
             update_temperature(&refresh_config.temperature, &timer_data);
             update_temp = false;
             // Update every 5 minutes
             add_alarm_in_ms(300000, update_temperature_alarm, &update_temp, true);
-        }
-        if(!mqtt_client.connected() && mqtt_has_connected && ntp.state() == ntp_state::SYNCED) {
-            mqtt_client.connect(mqtt_username, mqtt_password);
-            mqtt_has_connected = false;
+        } else if(mqtt_client.disconnected() && ntp_synced) {
+            info1("Connecting MQTT client\n");
+            mqtt_client.connect(
+                mqtt_username,
+                {(uint8_t*)mqtt_password.data(), mqtt_password.size()},
+                15, availability_topic,
+                {(uint8_t*)will_payload.data(), will_payload.size()},
+                0, true, {}, {}
+            );
         }
     }
 
