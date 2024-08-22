@@ -50,9 +50,8 @@ target_link_libraries(pico_rainviewer PRIVATE
     hardware_spi
     PNGdec
 )
-message($ENV{MQTT_PASSWORD})
-message($ENV{LAT})
-message($ENV{LNG})
+
+set(DEBUG_PROBE 1)
 target_compile_options(pico_rainviewer PRIVATE "-Wno-psabi")
 target_compile_definitions(pico_rainviewer PRIVATE 
     "WIFI_SSID=\"$ENV{WIFI_SSID}\""
@@ -64,13 +63,21 @@ target_compile_definitions(pico_rainviewer PRIVATE
     "LNG=$ENV{LNG}"
     "ZOOM=$ENV{ZOOM}"
     "TIMEZONE=\"$ENV{TIMEZONE}\""
-    "PICO_DEFAULT_UART_TX_PIN=16"
-	"PICO_DEFAULT_UART_RX_PIN=17"
+    "PICO_DEFAULT_UART_TX_PIN=12"
+	"PICO_DEFAULT_UART_RX_PIN=13"
 )
 target_link_options(pico_rainviewer PRIVATE "-Wl,--print-memory-usage")
 
+if(DEBUG_PROBE)
+message("Enabling debug probe compile")
+target_compile_definitions(pico_rainviewer PRIVATE "DEBUG_PROBE=1")
+pico_enable_stdio_usb(pico_rainviewer 0)
+pico_enable_stdio_uart(pico_rainviewer 1)
+else()
+message("Disabling debug probe compile")
 pico_enable_stdio_usb(pico_rainviewer 1)
 pico_enable_stdio_uart(pico_rainviewer 0)
+endif()
 pico_add_extra_outputs(pico_rainviewer)
 
 add_executable(pico_sram_test

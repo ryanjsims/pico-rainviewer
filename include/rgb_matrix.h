@@ -12,8 +12,15 @@
 #define ROWSEL_BASE_PIN 6
 #define ROWSEL_N_PINS   5
 #define CLK_PIN         11
+#ifndef DEBUG_PROBE
+#pragma message("USB programming")
 #define LATCH_PIN       12
 #define OEN_PIN         13
+#else
+#pragma message("Debug Probe programming")
+#define LATCH_PIN       14
+#define OEN_PIN         15
+#endif
 
 #include <limits.h>
 #include <string>

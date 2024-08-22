@@ -108,8 +108,13 @@ mqtt::client* mqtt_ptr = nullptr;
 #define DEFAULT_SPEED 60
 #define MIN_SPEED 15
 #define MAX_SPEED 120
-#define PALETTE_PIN 15
+#ifndef DEBUG_PROBE
 #define SPEED_PIN 14
+#define PALETTE_PIN 15
+#else
+#define SPEED_PIN 20
+#define PALETTE_PIN 21
+#endif
 
 struct config_t {
     uint8_t speed;
