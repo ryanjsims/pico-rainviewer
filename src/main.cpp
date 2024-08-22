@@ -311,28 +311,78 @@ bool decode_png(int rc, weather_map* scratch, uint32_t map_index) {
     return true;
 }
 
-bool download_full_map(weather_map* scratch, std::string target, bool final, uint32_t map_index) {
+void print_PNGFILE(PNGFILE* pFile) {
+    debug("PNGFILE:\n\tfHandle = %p\n\tiPos = %d\n\tiSize = %d\n\tpData = %p\n", pFile->fHandle, pFile->iPos, pFile->iSize, pFile->pData);
+}
+
+void * png_open_callback(const char *body_size_ptr, int32_t *pFileSize) {
+    debug1("png_open_callback called\n");
+    *pFileSize = *((int32_t*)body_size_ptr);
+    return (void*)calloc(1, 1);
+}
+
+void png_close_callback(void *pHandle) {
+    debug1("png_close_callback called\n");
+    free(pHandle);
+}
+
+int32_t png_read_callback(PNGFILE *pFile, uint8_t *pBuf, int32_t iLen) {
+    debug1("png_read_callback called\n");
+    bool first_read = !(*(bool*)pFile->fHandle);
+    print_PNGFILE(pFile);
+    debug("response parse_state = %d\niLen = %d\nresponse cap remaining = %d\n", client->streaming_response().get_parse_state(), iLen, client->streaming_response().capacity_remaining());
+    if(pFile->iPos == pFile->iSize) {
+        return 0;
+    }
+    while(client->streaming_response().available() < 32 && first_read || client->streaming_response().available() == 0) {
+        tight_loop_contents();
+    }
+    debug("Have %d bytes available, requested up to %d\n", client->streaming_response().available(), iLen);
+    int bytes_read;
+    if(*(bool*)pFile->fHandle) {
+        // This is not the first read, so actually destructively read the buffer
+        bytes_read = client->streaming_response().read({pBuf, MIN(iLen, client->streaming_response().available())});
+        debug("Read %d bytes into buffer %p\n", bytes_read, pBuf);
+        pFile->iPos += bytes_read;
+    } else {
+        bytes_read = client->streaming_response().peek({pBuf, MIN(iLen, client->streaming_response().available())});
+        debug("Peek %d bytes into buffer %p\n", bytes_read, pBuf);
+        *(bool*)pFile->fHandle = true;
+    }
+    return bytes_read;
+}
+
+int32_t png_seek_callback(PNGFILE *pFile, int32_t iPosition) {
+    debug("png_seek_callback called %d\n", iPosition);
+    print_PNGFILE(pFile);
+    int to_skip = iPosition - pFile->iPos;
+    if(to_skip < 0) {
+        error1("Tried to seek to earlier location in file =/\n");
+        return -1;
+    }
+    if(iPosition > pFile->iSize) {
+        return 0;
+    }
+    debug("Have %d bytes available, requested to skip %d\n", client->streaming_response().available(), to_skip);
+    uint8_t skipbuf[512];
+    while(to_skip > 0) {
+        while(client->streaming_response().available() == 0) {
+            tight_loop_contents();
+        }
+        std::span<uint8_t> skip = {&skipbuf[0], MIN(to_skip, sizeof(skipbuf))};
+        int bytes_read = client->streaming_response().read(skip);
+        to_skip -= bytes_read;
+        pFile->iPos += bytes_read;
+    }
+    return pFile->iPos;
+}
+
+bool download_full_map(weather_map* scratch, std::string target, bool final, uint32_t map_index, uint32_t body_size) {
     client->header("Connection", final ? "close" : "keep-alive");
-    client->get(target);
-    uint32_t timeout = 3000;
-    while(timeout > 0 && !client->has_response() && !client->has_error()) {
-        sleep_ms(10);
-        timeout--;
-    }
-    if(timeout == 0) {
-        error1("Timed out!\n");
-        return false;
-    }
-    else if(client->has_error()) {
-        error1("Failed to download map!\n");
-        return false;
-    }
-    const http_response& response = client->response();
-    if(response.get_body().size() > 0) {
-        int rc = png_decoder.openRAM((uint8_t*)response.get_body().data(), response.get_body().size(), png_draw_callback);
-        return decode_png(rc, scratch, map_index);
-    }
-    return false;
+    // Stream the response
+    client->get(target, "", true);
+    int rc = png_decoder.open((const char*)&body_size, png_open_callback, png_close_callback, png_read_callback, png_seek_callback, png_draw_callback);
+    return decode_png(rc, scratch, map_index);
 }
 
 struct spi_file {
@@ -490,7 +540,7 @@ uint8_t download_weather_maps(json& rain_maps, double lat, double lon, uint8_t z
         scratch->load(maps[to_download[i]["idx"].get<uint32_t>()], false);
         auto header = response.get_headers().find("Accept-Ranges");
         // if(length < (int)(TCP_WND * 0.75)) {
-            download_full_map(scratch, target, i == to_download.size() - 1, to_download[i]["idx"].get<uint32_t>());
+            download_full_map(scratch, target, i == to_download.size() - 1, to_download[i]["idx"].get<uint32_t>(), length);
         // } else if(header != response.get_headers().end() && header->second == "bytes") {
             // download_chunked_map(scratch, target, i == to_download.size() - 1, to_download[i]["idx"].get<uint32_t>(), length);
         // } else {
