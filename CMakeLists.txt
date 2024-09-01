@@ -10,7 +10,12 @@ project(pico-rainviewer)
 pico_sdk_init()
 
 add_subdirectory(lib/pico-web-client)
-target_compile_definitions(pico_web_client PRIVATE "LOG_LEVEL=$ENV{LOG_LEVEL}")
+target_compile_definitions(pico_web_client PRIVATE 
+    "LOG_LEVEL=$ENV{LOG_LEVEL}"
+    "HTTP_STATIC_SIZE=1"
+    "WEB_ALLOC_POOL_SIZE=32678"
+    "PICO_MALLOC_PANIC=0"
+)
 
 add_library(PNGdec
     lib/PNGdec/src/adler32.c
@@ -64,7 +69,9 @@ target_compile_definitions(pico_rainviewer PRIVATE
     "ZOOM=$ENV{ZOOM}"
     "TIMEZONE=\"$ENV{TIMEZONE}\""
     "PICO_DEFAULT_UART_TX_PIN=12"
-	"PICO_DEFAULT_UART_RX_PIN=13"
+    "PICO_DEFAULT_UART_RX_PIN=13"
+    "PICO_MALLOC_PANIC=0"
+    "HTTP_STATIC_SIZE=1"
 )
 target_link_options(pico_rainviewer PRIVATE "-Wl,--print-memory-usage")
 
@@ -75,7 +82,7 @@ pico_enable_stdio_usb(pico_rainviewer 0)
 pico_enable_stdio_uart(pico_rainviewer 1)
 else()
 message("Disabling debug probe compile")
-pico_enable_stdio_usb(pico_rainviewer 1)
+pico_enable_stdio_usb(pico_rainviewer 0)
 pico_enable_stdio_uart(pico_rainviewer 0)
 endif()
 pico_add_extra_outputs(pico_rainviewer)

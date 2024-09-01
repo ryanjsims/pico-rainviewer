@@ -9,7 +9,8 @@
 #include <http_client.h>
 #include <mqtt_client.h>
 #include <ntp_client.h>
-#include <nlohmann/json.hpp>
+#include <allocator.h>
+#include <ctime>
 #include "logger.h"
 #include <PNGdec.h>
 
@@ -82,9 +83,6 @@ fWKHcbjCMI/QjOTtoNj36eD195qBhD1uDS7Tqvl72dxI0Pj4nqnk7j0QJmcViLOT\n\
 zAs=\n\
 -----END CERTIFICATE-----";
 
-using namespace nlohmann;
-using namespace nlohmann::detail;
-
 std::u8string speed_topic_prefix;
 std::u8string palette_topic_prefix;
 std::u8string display_topic_prefix;
@@ -100,8 +98,8 @@ const std::u8string mqtt_password = (const char8_t*)MQTT_PASSWORD;
 weather_map_ext maps[16];
 PNG png_decoder;
 MC_23LCV1024 spi_sram(15625000);
-http_client* client;
-mqtt::client* mqtt_ptr = nullptr;
+http_client* http;
+mqtt::client* mqtt_client = nullptr;
 
 #define CONFIG_ADDR 0x00010000
 #define DEFAULT_PALETTE 4
@@ -180,50 +178,68 @@ std::string string_format(const std::string& format, Args ... args)
     return std::string(buf, buf + size - 1); // We don't want the '\0' inside
 }
 
+struct map_response_entry {
+    time_t time;
+    char path[44];
+};
+
+size_t parse_entries(std::string_view body, size_t curr, std::vector<map_response_entry, web::allocator<map_response_entry>> *array) {
+    size_t end = body.find("]", curr);
+    while(curr < end && curr != std::string::npos) {
+        map_response_entry entry;
+        size_t value_loc = body.find("time", curr) + 6;
+        auto result = std::from_chars(body.data() + value_loc, body.data() + value_loc + 20, entry.time);
+        value_loc = body.find("path", curr) + 7;
+        size_t value_end = body.find("\"", value_loc);
+        memcpy(entry.path, body.data() + value_loc, value_end - value_loc);
+        entry.path[value_end - value_loc] = '\0';
+        array->push_back(entry);
+        curr = body.find("{", curr + 1);
+    }
+    return end;
+}
+
 // TODO: Add last modified header check - if last modified hasn't changed, delay the update for a minute
-bool parse_weather_maps(json *array, uint64_t* generated, repeating_timer_t* timer) {
-    assert(array->type() == value_t::array);
+bool parse_weather_maps(std::vector<map_response_entry, web::allocator<map_response_entry>> *array, uint64_t* generated, repeating_timer_t* timer) {
     assert(generated != nullptr);
-    //http_client client("https://api.rainviewer.com", {(uint8_t*)ISRG_ROOT_X1_CERT, sizeof(ISRG_ROOT_X1_CERT)});
-    client->clear_error();
-    client->url("https://api.rainviewer.com");
+    http->clear_error();
+    http->url("https://api.rainviewer.com");
     bool responded = false;
 
-    client->on_response([array, &responded, generated]() {
-        const http_response& response = client->response();
+    http->on_response([array, &responded, generated]() {
+        const http_response& response = http->response();
         info("Got response: %d %.*s\n", response.status(), response.get_status_text().size(), response.get_status_text().data());
         if(response.status() == 200) {
-            json data = json::parse(response.get_body());
-            *generated = data["generated"];
-            for(auto it = data["radar"]["past"].begin(); it != data["radar"]["past"].end(); it++) {
-                array->push_back(*it);
-            }
-            for(auto it = data["radar"]["nowcast"].begin(); it != data["radar"]["nowcast"].end(); it++) {
-                array->push_back(*it);
-            }
+            std::string_view body = response.get_body();
+            size_t curr = body.find("generated") + sizeof("generated\":") - 1;
+            auto result = std::from_chars(body.data() + curr, body.data() + curr + 20, *generated);
+            curr = body.find("\"radar\":{\"past\":[") + 17;
+            size_t end = parse_entries(body, curr, array);
+            curr = body.find("nowcast", end) + 10;
+            end = parse_entries(body, curr, array);
         }
         responded = true;
     });
 
-    client->header("Connection", "close");
+    http->header("Connection", "close");
     cancel_repeating_timer(timer);
-    client->get("/public/weather-maps.json");
+    http->get("/public/weather-maps.json");
     uint32_t i = 3000;
     debug1("parse_weather_maps: Waiting for client to get response...\n");
-    while(i > 0 && !responded && !client->has_error()) {
+    while(i > 0 && !responded && !http->has_error()) {
         sleep_ms(10);
         i--;
     }
-    debug("parse_weather_maps:\n    i = %d\n    responded = %d\n    client->has_error = %d\n", i, responded, client->has_error());
+    debug("parse_weather_maps:\n    i = %d\n    responded = %d\n    client->has_error = %d\n", i, responded, http->has_error());
     add_repeating_timer_us(timer->delay_us, timer->callback, timer->user_data, timer);
     // Wait for the connection to close
     debug1("parse_weather_maps: Waiting for client to disconnect...\n");
-    while(client->connected()) {
+    while(http->connected()) {
         sleep_ms(10);
     }
     debug1("parse_weather_maps: Client disconnected.\n");
-    uint16_t status = client->response().status();
-    debug("parse_weather_maps: Client status %d\n", status);
+    uint16_t status = http->response().status();
+    info("parse_weather_maps: Client status %d\n", status);
     return status >= 200 && status < 300;
 }
 
@@ -232,38 +248,40 @@ bool update_temperature(float* temperature, repeating_timer_t* timer) {
     if(temperature == nullptr) {
         return false;
     }
-    client->clear_error();
-    client->url("https://weewx.fluorine.local");
+    http->clear_error();
+    http->url("https://weewx.fluorine.local");
     bool responded = false;
 
-    client->on_response([temperature, &responded]() {
-        const http_response& response = client->response();
+    http->on_response([temperature, &responded]() {
+        const http_response& response = http->response();
         info("Got response: %d '%.*s'\n", response.status(), response.get_status_text().size(), response.get_status_text().data());
         if(response.status() == 200) {
-            json data = json::parse(response.get_body());
-            *temperature = data["outdoors"]["fahrenheit"];
+            std::string_view body = response.get_body();
+            size_t curr = body.find("outdoors");
+            curr = body.find("fahrenheit", curr) + 12;
+            *temperature = std::stof(std::string{body.data() + curr, body.end()});
         }
         responded = true;
     });
 
-    client->header("Connection", "close");
+    http->header("Connection", "close");
     cancel_repeating_timer(timer);
-    client->get("/api/temperature");
+    http->get("/api/temperature");
     uint32_t i = 3000;
-    while(i > 0 && !responded && !client->has_error()) {
+    while(i > 0 && !responded && !http->has_error()) {
         sleep_ms(10);
         i--;
     }
     add_repeating_timer_us(timer->delay_us, timer->callback, timer->user_data, timer);
     // Wait for the connection to close
     debug1("update_temperature: Waiting for client to disconnect...\n");
-    while(client->connected()) {
+    while(http->connected()) {
         sleep_ms(10);
     }
     update_temperature_state();
     debug1("update_temperature: Client disconnected.\n");
-    uint16_t status = client->response().status();
-    debug("update_temperature: Client status %d\n", status);
+    uint16_t status = http->response().status();
+    info("update_temperature: Client status %d\n", status);
     return status >= 200 && status < 300;
 }
 
@@ -318,36 +336,36 @@ void print_PNGFILE(PNGFILE* pFile) {
 void * png_open_callback(const char *body_size_ptr, int32_t *pFileSize) {
     debug1("png_open_callback called\n");
     *pFileSize = *((int32_t*)body_size_ptr);
-    return (void*)calloc(1, 1);
+    return (void*)true;
 }
 
 void png_close_callback(void *pHandle) {
     debug1("png_close_callback called\n");
-    free(pHandle);
 }
 
 int32_t png_read_callback(PNGFILE *pFile, uint8_t *pBuf, int32_t iLen) {
     debug1("png_read_callback called\n");
-    bool first_read = !(*(bool*)pFile->fHandle);
+    bool first_read = (bool)pFile->fHandle;
     print_PNGFILE(pFile);
-    debug("response parse_state = %d\niLen = %d\nresponse cap remaining = %d\n", client->streaming_response().get_parse_state(), iLen, client->streaming_response().capacity_remaining());
+    debug("response parse_state = %d\niLen = %d\nresponse cap remaining = %d\n", http->streaming_response().get_parse_state(), iLen, http->streaming_response().capacity_remaining());
     if(pFile->iPos == pFile->iSize) {
         return 0;
     }
-    while(client->streaming_response().available() < 32 && first_read || client->streaming_response().available() == 0) {
+    while(http->streaming_response().available() < 32 && first_read || http->streaming_response().available() == 0) {
         tight_loop_contents();
     }
-    debug("Have %d bytes available, requested up to %d\n", client->streaming_response().available(), iLen);
+    debug("Have %d bytes available, requested up to %d\n", http->streaming_response().available(), iLen);
     int bytes_read;
-    if(*(bool*)pFile->fHandle) {
+    if(!first_read) {
         // This is not the first read, so actually destructively read the buffer
-        bytes_read = client->streaming_response().read({pBuf, MIN(iLen, client->streaming_response().available())});
+        bytes_read = http->streaming_response().read({pBuf, MIN(iLen, http->streaming_response().available())});
         debug("Read %d bytes into buffer %p\n", bytes_read, pBuf);
         pFile->iPos += bytes_read;
     } else {
-        bytes_read = client->streaming_response().peek({pBuf, MIN(iLen, client->streaming_response().available())});
+        bytes_read = http->streaming_response().peek({pBuf, MIN(iLen, http->streaming_response().available())});
         debug("Peek %d bytes into buffer %p\n", bytes_read, pBuf);
-        *(bool*)pFile->fHandle = true;
+        // Set first_read to false
+        pFile->fHandle = (void*)false;
     }
     return bytes_read;
 }
@@ -363,14 +381,14 @@ int32_t png_seek_callback(PNGFILE *pFile, int32_t iPosition) {
     if(iPosition > pFile->iSize) {
         return 0;
     }
-    debug("Have %d bytes available, requested to skip %d\n", client->streaming_response().available(), to_skip);
+    debug("Have %d bytes available, requested to skip %d\n", http->streaming_response().available(), to_skip);
     uint8_t skipbuf[512];
     while(to_skip > 0) {
-        while(client->streaming_response().available() == 0) {
+        while(http->streaming_response().available() == 0) {
             tight_loop_contents();
         }
         std::span<uint8_t> skip = {&skipbuf[0], MIN(to_skip, sizeof(skipbuf))};
-        int bytes_read = client->streaming_response().read(skip);
+        int bytes_read = http->streaming_response().read(skip);
         to_skip -= bytes_read;
         pFile->iPos += bytes_read;
     }
@@ -378,9 +396,9 @@ int32_t png_seek_callback(PNGFILE *pFile, int32_t iPosition) {
 }
 
 bool download_full_map(weather_map* scratch, std::string target, bool final, uint32_t map_index, uint32_t body_size) {
-    client->header("Connection", final ? "close" : "keep-alive");
+    http->header("Connection", final ? "close" : "keep-alive");
     // Stream the response
-    client->get(target, "", true);
+    http->get(target, "", true);
     int rc = png_decoder.open((const char*)&body_size, png_open_callback, png_close_callback, png_read_callback, png_seek_callback, png_draw_callback);
     return decode_png(rc, scratch, map_index);
 }
@@ -440,12 +458,12 @@ bool download_chunked_map(weather_map* scratch, std::string target, bool final, 
     uint8_t timeouts = 3;
     info("Attempting chunked download of image of length %d\n", length);
     while(downloaded < length) {
-        client->header("Connection", final && (downloaded + chunk_size > length) ? "close" : "keep-alive");
+        http->header("Connection", final && (downloaded + chunk_size > length) ? "close" : "keep-alive");
         sprintf(buf, "bytes=%d-%d", downloaded, MIN(downloaded + chunk_size - 1, length));
-        client->header("Range", buf);
-        client->get(target);
+        http->header("Range", buf);
+        http->get(target);
         uint32_t timeout = 3000;
-        while(timeout > 0 && !client->has_response()) {
+        while(timeout > 0 && !http->has_response()) {
             sleep_ms(10);
             timeout--;
         }
@@ -456,7 +474,7 @@ bool download_chunked_map(weather_map* scratch, std::string target, bool final, 
         } else if(timeouts == 0) {
             return false;
         }
-        const std::string_view& body = client->response().get_body();
+        const std::string_view& body = http->response().get_body();
         int32_t written = spi_sram.write(CONFIG_ADDR + sizeof(config_t) + sizeof(int32_t) * 2 + downloaded, {(uint8_t*)body.data(), body.size()});
         downloaded += body.size();
         printf("Downloaded %d / %d\r", downloaded, length);
@@ -470,9 +488,15 @@ bool download_chunked_map(weather_map* scratch, std::string target, bool final, 
     return false;
 }
 
-uint8_t download_weather_maps(json& rain_maps, double lat, double lon, uint8_t z, weather_map* scratch, repeating_timer_t* timer) {
+struct map_download_entry {
+    uint8_t index;
+    time_t time;
+    std::string_view path;
+};
+
+uint8_t download_weather_maps(std::vector<map_response_entry, web::allocator<map_response_entry>>& rain_maps, double lat, double lon, uint8_t z, weather_map* scratch, repeating_timer_t* timer) {
     uint8_t start = 0, count = rain_maps.size();
-    uint32_t first_timestamp = rain_maps[0]["time"];
+    uint32_t first_timestamp = rain_maps[0].time;
     for(uint8_t i = 0; i < count; i++) {
         if((time_t)first_timestamp == maps[i].timestamp()) {
             start = i;
@@ -480,25 +504,37 @@ uint8_t download_weather_maps(json& rain_maps, double lat, double lon, uint8_t z
         }
     }
 
-    json to_download = json::array();
+    std::vector<map_download_entry, web::allocator<map_download_entry>> to_download;
 
     for(uint8_t i = 0; i < count; i++) {
         uint8_t idx = (start + i) % 16;
-        bool nowcast = rain_maps[i]["path"].get<std::string>().find("nowcast") != std::string::npos;
-        if(maps[idx].nowcast() || maps[idx].timestamp() != rain_maps[i]["time"].get<time_t>()) {
+        std::string_view path = {rain_maps[i].path, strnlen(rain_maps[i].path, sizeof(rain_maps[i].path))};
+        bool nowcast = path.find("nowcast") != std::string::npos;
+        if(maps[idx].nowcast() || maps[idx].timestamp() != rain_maps[i].time) {
             maps[idx].set_nowcast(nowcast);
-            maps[idx].set_timestamp(rain_maps[i]["time"].get<time_t>());
-            rain_maps[i]["idx"] = idx;
-            to_download.push_back(rain_maps[i]);
+            maps[idx].set_timestamp(rain_maps[i].time);
+            to_download.push_back({idx, maps[idx].timestamp(), path});
         }
     }
-    info("Downloading %d maps...\n%s\n", to_download.size(), to_download.dump(4).c_str());
-    //http_client client("https://tilecache.rainviewer.com", {(uint8_t*)ISRG_ROOT_X1_CERT, sizeof(ISRG_ROOT_X1_CERT)});
-    client->clear_error();
-    client->url("https://tilecache.rainviewer.com");
+    #if LOG_LEVEL <= LOG_LEVEL_INFO
+    info("Downloading %d maps...\n[\n", to_download.size());
+    for(int i = 0; i < to_download.size(); i++) {
+        info_cont("    {\n        \"idx\": %d,\n        \"path\": \"%.*s\",\n        \"time\": %ld\n    }%s\n", 
+            to_download[i].index,
+            to_download[i].path.size(),
+            to_download[i].path.data(),
+            to_download[i].time,
+            ((i == to_download.size() - 1) ? "" : ",")
+        );
+    }
+    info_cont1("]\n");
+    #endif
 
-    client->on_response([]() {
-        const http_response& response = client->response();
+    http->clear_error();
+    http->url("https://tilecache.rainviewer.com");
+
+    http->on_response([]() {
+        const http_response& response = http->response();
         info("Got response: %d %.*s\n", response.status(), response.get_status_text().size(), response.get_status_text().data());
         auto& headers = response.get_headers();
         const std::string_view content_type = headers.at("Content-Type");
@@ -512,19 +548,18 @@ uint8_t download_weather_maps(json& rain_maps, double lat, double lon, uint8_t z
     });
 
     int8_t retry = -1;
+    char target[96];
     for(uint8_t i = 0; i < to_download.size(); i++) {
         if(retry != -1) {
             i = retry;
             retry = -1;
         }
-        char buf[64];
-        sprintf(buf, "/256/%d/%.4lf/%.4lf/0/0_1.png", z, lat, lon);
-        std::string target = to_download[i]["path"].get<std::string>() + buf;
-        info("Requesting %s\n", target.c_str());
+        sprintf(target, "%.*s/256/%d/%.4lf/%.4lf/0/0_1.png", to_download[i].path.size(), to_download[i].path.data(), z, lat, lon);
+        info("Requesting %s\n", target);
         cancel_repeating_timer(timer);
-        client->head(target);
+        http->head(target);
         uint32_t timeout = 3000;
-        while(timeout > 0 && !client->has_response()) {
+        while(timeout > 0 && !http->has_response()) {
             sleep_ms(10);
             timeout--;
         }
@@ -533,14 +568,14 @@ uint8_t download_weather_maps(json& rain_maps, double lat, double lon, uint8_t z
             retry = i;
             continue;
         }
-        const http_response& response = client->response();
+        const http_response& response = http->response();
         int length;
         std::string_view content_length = response.get_headers().at("Content-Length");
         std::from_chars(content_length.begin(), content_length.end(), length);
-        scratch->load(maps[to_download[i]["idx"].get<uint32_t>()], false);
+        scratch->load(maps[to_download[i].index], false);
         auto header = response.get_headers().find("Accept-Ranges");
         // if(length < (int)(TCP_WND * 0.75)) {
-            download_full_map(scratch, target, i == to_download.size() - 1, to_download[i]["idx"].get<uint32_t>(), length);
+            download_full_map(scratch, target, i == to_download.size() - 1, to_download[i].index, length);
         // } else if(header != response.get_headers().end() && header->second == "bytes") {
             // download_chunked_map(scratch, target, i == to_download.size() - 1, to_download[i]["idx"].get<uint32_t>(), length);
         // } else {
@@ -550,7 +585,7 @@ uint8_t download_weather_maps(json& rain_maps, double lat, double lon, uint8_t z
     }
     // Wait for the connection to close
     debug1("download_weather_maps: Waiting for client to disconnect...\n");
-    while(client->connected()) {
+    while(http->connected()) {
         sleep_ms(10);
     }
     debug1("download_weather_maps: Client disconnected.\n");
@@ -602,7 +637,7 @@ volatile uint8_t current_palette = DEFAULT_PALETTE;
 volatile uint32_t current_speed = DEFAULT_SPEED;
 absolute_time_t last_call = get_absolute_time();
 
-std::vector<std::string> palette_names = {
+std::array<std::string, 9> palette_names = {
     "0 - Grayscale dBZ Values",
     "1 - Original",
     "2 - Universal Blue",
@@ -615,19 +650,20 @@ std::vector<std::string> palette_names = {
 };
 
 void update_speed_state() {
-    if(!mqtt_ptr || !mqtt_ptr->connected()) {
+    if(!mqtt_client || !mqtt_client->connected()) {
         warn1("MQTT not connected, not updating speed state\n");
         return;
     }
-    std::string speed = std::to_string(config.speed);
+    char speed[8];
+    int written = std::snprintf(speed, sizeof(speed), "%d", config.speed);
     mqtt::publish_packet::flags_t flags{};
     flags.qos(1);
     flags.retain(true);
-    mqtt_ptr->publish(speed_topic_prefix + state_topic, flags, {(u8_t*)speed.data(), speed.size()});
+    mqtt_client->publish(speed_topic_prefix + state_topic, flags, {(u8_t*)speed, (uint32_t)written});
 }
 
 void update_palette_state() {
-    if(!mqtt_ptr || !mqtt_ptr->connected()) {
+    if(!mqtt_client || !mqtt_client->connected()) {
         warn1("MQTT not connected, not updating palette state\n");
         return;
     }
@@ -635,11 +671,11 @@ void update_palette_state() {
     mqtt::publish_packet::flags_t flags{};
     flags.qos(1);
     flags.retain(true);
-    mqtt_ptr->publish(palette_topic_prefix + state_topic, flags, {(u8_t*)palette.data(), palette.size()});
+    mqtt_client->publish(palette_topic_prefix + state_topic, flags, {(u8_t*)palette.data(), palette.size()});
 }
 
 void update_display_state() {
-    if(!mqtt_ptr || !mqtt_ptr->connected()) {
+    if(!mqtt_client || !mqtt_client->connected()) {
         warn1("MQTT not connected, not updating display state\n");
         return;
     }
@@ -647,11 +683,11 @@ void update_display_state() {
     mqtt::publish_packet::flags_t flags{};
     flags.qos(1);
     flags.retain(true);
-    mqtt_ptr->publish(display_topic_prefix + state_topic, flags, {(u8_t*)state.data(), state.size()});
+    mqtt_client->publish(display_topic_prefix + state_topic, flags, {(u8_t*)state.data(), state.size()});
 }
 
 void update_temperature_state() {
-    if(!mqtt_ptr || !mqtt_ptr->connected()) {
+    if(!mqtt_client || !mqtt_client->connected()) {
         warn1("MQTT not connected, not updating temperature state\n");
         return;
     }
@@ -660,7 +696,7 @@ void update_temperature_state() {
     mqtt::publish_packet::flags_t flags{};
     flags.qos(1);
     flags.retain(true);
-    mqtt_ptr->publish(temperature_topic_prefix + state_topic, flags, {(u8_t*)buff, (size_t)written});
+    mqtt_client->publish(temperature_topic_prefix + state_topic, flags, {(u8_t*)buff, (size_t)written});
 }
 
 void save_config();
@@ -767,64 +803,62 @@ void save_config() {
 
 void perform_discovery(std::string unique_id) {
     info1("Performing MQTT discovery...\n");
-    json discovery;
-    discovery["name"] = "Display";
-    discovery["~"] = (char*)display_topic_prefix.c_str();
-    discovery["avty_t"] = (char*)(availability_topic).c_str();
-    discovery["cmd_t"] = (char*)(u8"~" + command_topic).c_str();
-    discovery["dev"] = {};
-    discovery["dev"]["ids"] = {(char*)unique_id.c_str()};
-    discovery["dev"]["name"] = "Rainviewer";
-    discovery["dev"]["mf"] = "ryanjsims";
-    discovery["dev"]["mdl"] = unique_id;
-    discovery["o"] = {};
-    discovery["o"]["name"] = "ryanjsims";
-    discovery["o"]["sw"] = "1.0";
-    discovery["o"]["url"] = "https://github.com/ryanjsims/pico-rainviewer";
-    discovery["qos"] = 1;
-    discovery["stat_t"] = (char*)(u8"~" + state_topic).c_str();
-    discovery["uniq_id"] = unique_id + "-display";
 
     auto flags = mqtt::publish_packet::flags_t();
     flags.qos(1);
 
-    std::string discovery_string = discovery.dump();
-    info("Publishing display discovery\n%.*s\n", discovery_string.size(), discovery_string.data());
-    mqtt_ptr->publish(display_topic_prefix + discovery_topic, flags, {(uint8_t*)discovery_string.data(), discovery_string.size()});
+    char discovery_buf[768];
+    uint32_t written = snprintf(discovery_buf, sizeof(discovery_buf), "{\"avty_t\":\"%s\",\"cmd_t\":\"~%s\",\"dev\":{\"ids\":[\"%s\"],\"mdl\":\"%s\",\"mf\":\"ryanjsims\",\"name\":\"Rainviewer\"},\"name\":\"Display\",\"o\":{\"name\":\"ryanjsims\",\"sw\":\"1.0\",\"url\":\"https://github.com/ryanjsims/pico-rainviewer\"},\"qos\":1,\"stat_t\":\"~%s\",\"uniq_id\":\"%s-display\",\"~\":\"%s\"}",
+        (char*)(availability_topic).c_str(),
+        (char*)(command_topic).c_str(),
+        (char*)unique_id.c_str(),
+        (char*)unique_id.c_str(),
+        (char*)(state_topic).c_str(),
+        (char*)unique_id.c_str(),
+        (char*)display_topic_prefix.c_str()
+    );
 
-    discovery["~"] = (char*)(palette_topic_prefix).c_str();
-    discovery["name"] = "Palette";
-    discovery["ops"] = palette_names;
-    discovery["uniq_id"] = unique_id + "-palette";
+    info("Publishing display discovery\n%.*s\n", written, discovery_buf);
+    mqtt_client->publish(display_topic_prefix + discovery_topic, flags, {(uint8_t*)discovery_buf, written});
 
-    discovery_string = discovery.dump();
-    info("Publishing palette discovery\n%.*s\n", discovery_string.size(), discovery_string.data());
-    mqtt_ptr->publish(palette_topic_prefix + discovery_topic, flags, {(uint8_t*)discovery_string.data(), discovery_string.size()});
+    written = snprintf(discovery_buf, sizeof(discovery_buf), "{\"avty_t\":\"%s\",\"cmd_t\":\"~%s\",\"dev\":{\"ids\":[\"%s\"],\"mdl\":\"%s\",\"mf\":\"ryanjsims\",\"name\":\"Rainviewer\"},\"name\":\"Palette\",\"o\":{\"name\":\"ryanjsims\",\"sw\":\"1.0\",\"url\":\"https://github.com/ryanjsims/pico-rainviewer\"},\"ops\":[\"0 - Grayscale dBZ Values\",\"1 - Original\",\"2 - Universal Blue\",\"3 - TITAN\",\"4 - The Weather Channel\",\"5 - Meteored\",\"6 - NEXRAD Level III\",\"7 - Rainbow @ SELEX-IS\",\"8 - Dark Sky\"],\"qos\":1,\"stat_t\":\"~%s\",\"uniq_id\":\"%s-palette\",\"~\":\"%s\"}",
+        (char*)(availability_topic).c_str(),
+        (char*)(command_topic).c_str(),
+        (char*)unique_id.c_str(),
+        (char*)unique_id.c_str(),
+        (char*)(state_topic).c_str(),
+        (char*)unique_id.c_str(),
+        (char*)palette_topic_prefix.c_str()
+    );
+    info("Publishing palette discovery\n%.*s\n", written, discovery_buf);
+    mqtt_client->publish(palette_topic_prefix + discovery_topic, flags, {(uint8_t*)discovery_buf, written});
 
-    discovery["~"] = (char*)(speed_topic_prefix).c_str();
-    discovery["min"] = 0;
-    discovery["max"] = MAX_SPEED;
-    discovery["mode"] = "slider";
-    discovery["name"] = "Refresh Delay";
-    discovery["uniq_id"] = unique_id + "-speed";
-    discovery.erase("ops");
-
-    discovery_string = discovery.dump();
-    info("Publishing speed discovery\n%.*s\n", discovery_string.size(), discovery_string.data());
-    mqtt_ptr->publish(speed_topic_prefix + discovery_topic, flags, {(uint8_t*)discovery_string.data(), discovery_string.size()});
+    written = snprintf(discovery_buf, sizeof(discovery_buf), "{\"avty_t\":\"%s\",\"cmd_t\":\"~%s\",\"dev\":{\"ids\":[\"%s\"],\"mdl\":\"%s\",\"mf\":\"ryanjsims\",\"name\":\"Rainviewer\"},\"max\":%d,\"min\":0,\"mode\":\"slider\",\"name\":\"Refresh Delay\",\"o\":{\"name\":\"ryanjsims\",\"sw\":\"1.0\",\"url\":\"https://github.com/ryanjsims/pico-rainviewer\"},\"qos\":1,\"stat_t\":\"~%s\",\"uniq_id\":\"%s-speed\",\"~\":\"%s\"}",
+        (char*)(availability_topic).c_str(),
+        (char*)(command_topic).c_str(),
+        (char*)unique_id.c_str(),
+        (char*)unique_id.c_str(),
+        MAX_SPEED,
+        (char*)(state_topic).c_str(),
+        (char*)unique_id.c_str(),
+        (char*)speed_topic_prefix.c_str()
+    );
+    info("Publishing speed discovery\n%.*s\n", written, discovery_buf);
+    mqtt_client->publish(speed_topic_prefix + discovery_topic, flags, {(uint8_t*)discovery_buf, written});
     
-    discovery["~"] = (char*)(temperature_topic_prefix).c_str();
-    discovery["min"] = -150;
-    discovery["max"] = 150;
-    discovery["mode"] = "box";
-    discovery["name"] = "Temperature";
-    discovery["step"] = 0.1;
-    discovery["unit_of_meas"] = "°F";
-    discovery["uniq_id"] = unique_id + "-temperature";
-
-    discovery_string = discovery.dump();
-    info("Publishing temperature discovery\n%.*s\n", discovery_string.size(), discovery_string.data());
-    mqtt_ptr->publish(temperature_topic_prefix + discovery_topic, flags, {(uint8_t*)discovery_string.data(), discovery_string.size()});
+    written = snprintf(discovery_buf, sizeof(discovery_buf), "{\"avty_t\":\"%s\",\"cmd_t\":\"~%s\",\"dev\":{\"ids\":[\"%s\"],\"mdl\":\"%s\",\"mf\":\"ryanjsims\",\"name\":\"Rainviewer\"},\"max\":%d,\"min\":%d,\"mode\":\"box\",\"name\":\"Temperature\",\"o\":{\"name\":\"ryanjsims\",\"sw\":\"1.0\",\"url\":\"https://github.com/ryanjsims/pico-rainviewer\"},\"qos\":1,\"stat_t\":\"~%s\",\"step\":0.1,\"uniq_id\":\"%s-temperature\",\"unit_of_meas\":\"°F\",\"~\":\"%s\"}",
+        (char*)(availability_topic).c_str(),
+        (char*)(command_topic).c_str(),
+        (char*)unique_id.c_str(),
+        (char*)unique_id.c_str(),
+        150,
+        -150,
+        (char*)(state_topic).c_str(),
+        (char*)unique_id.c_str(),
+        (char*)temperature_topic_prefix.c_str()
+    );
+    info("Publishing temperature discovery\n%.*s\n", written, discovery_buf);
+    mqtt_client->publish(temperature_topic_prefix + discovery_topic, flags, {(uint8_t*)discovery_buf, written});
 
     update_display_state();
     update_palette_state();
@@ -833,7 +867,7 @@ void perform_discovery(std::string unique_id) {
 
     std::string available = "online";
     flags.retain(true);
-    mqtt_ptr->publish(availability_topic, flags, {(uint8_t*)available.data(), available.size()});
+    mqtt_client->publish(availability_topic, flags, {(uint8_t*)available.data(), available.size()});
     info1("MQTT discovery publishes complete\n");
 }
 
@@ -842,7 +876,6 @@ int main() {
     rtc_init();
     setenv("TZ", TIMEZONE, 1);
     tzset();
-    dns_init();
 
     char board_id[2 * PICO_UNIQUE_BOARD_ID_SIZE_BYTES + 1];
     pico_get_unique_board_id_string(board_id, sizeof(board_id));
@@ -857,7 +890,7 @@ int main() {
     availability_topic = u8"homeassistant/device/" + u8unique_id + u8"/avail";
     std::u8string command_topic_filter = u8"homeassistant/+/" + u8unique_id + u8"/+/set";
 
-    std::vector<std::u8string> command_topics = {
+    std::array<std::u8string, 4> command_topics = {
         display_topic_prefix + command_topic,
         speed_topic_prefix + command_topic,
         palette_topic_prefix + command_topic,
@@ -876,9 +909,6 @@ int main() {
         error1("Wi-Fi init failed\n");
         return -1;
     }
-    cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, 1);
-    sleep_ms(2000);
-    cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, 0);
 
     cyw43_arch_enable_sta_mode();
     info("Connecting to WiFi SSID %s...\n", WIFI_SSID);
@@ -921,8 +951,7 @@ int main() {
     matrix->clear();
     matrix->start();
 
-    http_client http("https://api.rainviewer.com", {(uint8_t*)ISRG_ROOT_X1_CERT, sizeof(ISRG_ROOT_X1_CERT)});
-    client = &http;
+    http = new http_client("https://api.rainviewer.com", {(uint8_t*)ISRG_ROOT_X1_CERT, sizeof(ISRG_ROOT_X1_CERT)});
 
     ip_addr_t address;
     IP4_ADDR(&address, 192, 168, 0, 2);
@@ -951,13 +980,12 @@ int main() {
 
     bool success = add_repeating_timer_us(-100000, refresh_display_timer, &refresh_config, &timer_data);
 
-    json rain_maps = json::array();
+    std::vector<map_response_entry, web::allocator<map_response_entry>> rain_maps;
     uint64_t generated_timestamp = 0;
     char buf[128];
 
-    mqtt::client mqtt_client("mqtts://homeassistant.local", {(uint8_t*)ISRG_ROOT_X1_CERT, sizeof(ISRG_ROOT_X1_CERT)});
-    mqtt_ptr = &mqtt_client;
-    mqtt::publish_handler_t mqtt_sub_handler = [&command_topics, &mqtt_client](std::u8string_view topic, const mqtt::properties& props, std::span<uint8_t> data) {
+    mqtt_client = new mqtt::client("mqtts://homeassistant.local", {(uint8_t*)ISRG_ROOT_X1_CERT, sizeof(ISRG_ROOT_X1_CERT)});
+    mqtt::publish_handler_t mqtt_sub_handler = [&command_topics](std::u8string_view topic, const mqtt::properties& props, std::span<uint8_t> data) {
         std::string_view payload{(char*)data.data(), data.size()};
         mqtt::publish_packet::flags_t flags;
         flags.qos(1);
@@ -993,7 +1021,7 @@ int main() {
         return mqtt::reason_code::SUCCESS;
     };
 
-    mqtt::publish_handler_t mqtt_disc_handler = [&mqtt_client, &unique_id](std::u8string_view topic, const mqtt::properties& props, std::span<uint8_t> data) {
+    mqtt::publish_handler_t mqtt_disc_handler = [&unique_id](std::u8string_view topic, const mqtt::properties& props, std::span<uint8_t> data) {
         std::string_view message = {(char*)data.data(), data.size()};
         if(message == "online") {
             perform_discovery(unique_id);
@@ -1002,12 +1030,12 @@ int main() {
     };
 
     std::string will_payload = "offline";
-    mqtt_client.on_connect([&mqtt_client, &unique_id, &command_topic_filter, &mqtt_sub_handler, &mqtt_disc_handler]() {
+    mqtt_client->on_connect([&unique_id, &command_topic_filter, &mqtt_sub_handler, &mqtt_disc_handler]() {
         perform_discovery(unique_id);
 
         auto options = mqtt::subscribe_packet::options_t{2, false, false, 0};
-        mqtt_client.subscribe(command_topic_filter, options, mqtt_sub_handler);
-        mqtt_client.subscribe(homeassistant_status_topic, options, mqtt_disc_handler);
+        mqtt_client->subscribe(command_topic_filter, options, mqtt_sub_handler);
+        mqtt_client->subscribe(homeassistant_status_topic, options, mqtt_disc_handler);
     });
 
     while(1) {
@@ -1023,14 +1051,21 @@ int main() {
                 retries--;
             }
             if(!success) {
-                // Wait 10 seconds, then try again if no request succeeded
-                add_alarm_in_ms(10 * 1000, update_maps_alarm, &update_maps, true);
+                // Wait 60 seconds, then try again if no request succeeded
+                add_alarm_in_ms(60 * 1000, update_maps_alarm, &update_maps, true);
                 update_maps = false;
-                info1("Failed to update maps, trying in 10 seconds\n");
+                if(mqtt_client->connected()) {
+                    info1("Failed to update maps - assuming memory issue, disconnecting mqtt to maybe defrag memory\n");
+                    mqtt_client->disconnect(mqtt::reason_code::NORMAL_DISCONNECT);
+                }
                 continue;
             }
             
-            info("Rain maps found as:\n%s\n", rain_maps.dump(4).c_str());
+            info1("Rain maps found as:\n[\n");
+            for(int i = 0; i < rain_maps.size(); i++) {
+                info_cont("    {\n        \"path\": \"%s\",\n        \"time\": %ld\n    }%s\n", rain_maps[i].path, rain_maps[i].time, ((i == rain_maps.size() - 1) ? "" : ","));
+            }
+            info_cont1("]\n");
 
             datetime_t datetime;
             rtc_get_datetime(&datetime);
@@ -1050,13 +1085,18 @@ int main() {
             info("Updated maps, sleeping until %s\n", buf);
         } else if(update_temp && ntp_synced) {
             info1("Updating temperature\n");
-            update_temperature(&refresh_config.temperature, &timer_data);
+            bool result = update_temperature(&refresh_config.temperature, &timer_data);
             update_temp = false;
             // Update every 5 minutes
-            add_alarm_in_ms(300000, update_temperature_alarm, &update_temp, true);
-        } else if(mqtt_client.disconnected() && ntp_synced) {
+            // If unsuccessful, try in a minute
+            add_alarm_in_ms((result ? 300000 : 60000), update_temperature_alarm, &update_temp, true);
+            if(!result && mqtt_client->connected()) {
+                info1("Failed to update temperature - assuming memory issue, disconnecting mqtt to maybe defrag memory\n");
+                mqtt_client->disconnect(mqtt::reason_code::NORMAL_DISCONNECT);
+            }
+        } else if(mqtt_client->disconnected() && ntp_synced) {
             info1("Connecting MQTT client\n");
-            mqtt_client.connect(
+            mqtt_client->connect(
                 mqtt_username,
                 {(uint8_t*)mqtt_password.data(), mqtt_password.size()},
                 15, availability_topic,
